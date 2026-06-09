@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from tests import _bootstrap  # noqa: F401
+
+from imap_agent_cli.cli import main
+from imap_agent_cli.errors import AppError
+from imap_agent_cli.skill import MANAGED_MARKER, install_skill, remove_skill
+
+
+class SkillTests(unittest.TestCase):
+    def test_install_skill_creates_and_updates_managed_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = install_skill(root)
+            self.assertTrue(first["installed"])
+            self.assertTrue(first["updated"])
+            skill_path = root / "imap" / "SKILL.md"
+            self.assertTrue(skill_path.exists())
+            content = skill_path.read_text(encoding="utf-8")
+            self.assertIn("name: imap", content)
+            self.assertIn(MANAGED_MARKER, content)
+            self.assertIn("draft reply", content)
+
+            second = install_skill(root)
+            self.assertTrue(second["installed"])
+            self.assertFalse(second["updated"])
+
+    def test_remove_skill_removes_only_managed_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_skill(root)
+            removed = remove_skill(root)
+            self.assertTrue(removed["removed"])
+            self.assertFalse((root / "imap").exists())
+
+    def test_remove_skill_refuses_unmanaged_skill_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_dir = root / "imap"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("---\nname: imap\n---\ncustom\n", encoding="utf-8")
+            with self.assertRaises(AppError):
+                remove_skill(root)
+            removed = remove_skill(root, force=True)
+            self.assertTrue(removed["removed"])
+
+    def test_cli_install_skill_outputs_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = StringIO()
+            with patch("sys.stdout", stdout):
+                code = main(["install-skill", "--skills-dir", tmp])
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["skill"], "imap")
+            self.assertTrue((Path(tmp) / "imap" / "SKILL.md").exists())
+
+    def test_cli_remove_skill_outputs_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install_skill(Path(tmp))
+            stdout = StringIO()
+            with patch("sys.stdout", stdout):
+                code = main(["remove-skill", "--skills-dir", tmp])
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["removed"])
+
+
+if __name__ == "__main__":
+    unittest.main()

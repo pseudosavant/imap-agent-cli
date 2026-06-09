@@ -71,6 +71,32 @@ Config path:
 
 Secrets should stay in environment variables, not the config file.
 
+## Codex Skill
+
+Install or update the user-scoped Codex skill:
+
+```text
+imap-agent-cli install-skill
+```
+
+This writes:
+
+```text
+~/.agents/skills/imap/SKILL.md
+```
+
+Remove the managed skill:
+
+```text
+imap-agent-cli remove-skill
+```
+
+Use `--skills-dir PATH` to install into a nonstandard skills directory, for example:
+
+```text
+imap-agent-cli install-skill --skills-dir C:\Users\PaulEllis\.agents\skills
+```
+
 ## Safety Boundary
 
 Allowed:

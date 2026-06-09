@@ -12,6 +12,7 @@ from .errors import AppError, ConfigError
 from .imap_client import ImapSession
 from .mime import create_draft_message, header_value, parse_message
 from .render import write_error, write_json
+from .skill import install_skill, remove_skill
 
 
 def _read_json_arg(value: str) -> dict[str, Any]:
@@ -135,6 +136,16 @@ def cmd_config(args: argparse.Namespace) -> int:
 def cmd_profiles(args: argparse.Namespace) -> int:
     config = load_config()
     write_json({"profiles": [profile.name for profile in config.profiles.values()], "default": config.defaults.profile})
+    return 0
+
+
+def cmd_install_skill(args: argparse.Namespace) -> int:
+    write_json(install_skill(Path(args.skills_dir) if args.skills_dir else None))
+    return 0
+
+
+def cmd_remove_skill(args: argparse.Namespace) -> int:
+    write_json(remove_skill(Path(args.skills_dir) if args.skills_dir else None, force=args.force))
     return 0
 
 
@@ -307,6 +318,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     profiles = sub.add_parser("profiles")
     profiles.set_defaults(func=cmd_profiles)
+
+    install_skill_parser = sub.add_parser("install-skill")
+    install_skill_parser.add_argument("--skills-dir")
+    install_skill_parser.set_defaults(func=cmd_install_skill)
+
+    remove_skill_parser = sub.add_parser("remove-skill")
+    remove_skill_parser.add_argument("--skills-dir")
+    remove_skill_parser.add_argument("--force", action="store_true")
+    remove_skill_parser.set_defaults(func=cmd_remove_skill)
 
     folders = sub.add_parser("folders")
     _common_profile_args(folders)
