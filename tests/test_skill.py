@@ -11,7 +11,7 @@ from tests import _bootstrap  # noqa: F401
 
 from imap_agent_cli.cli import main
 from imap_agent_cli.errors import AppError
-from imap_agent_cli.skill import MANAGED_MARKER, install_skill, remove_skill
+from imap_agent_cli.skill import MANAGED_MARKER, SKILL_MD, install_skill, remove_skill
 
 
 class SkillTests(unittest.TestCase):
@@ -31,6 +31,13 @@ class SkillTests(unittest.TestCase):
             second = install_skill(root)
             self.assertTrue(second["installed"])
             self.assertFalse(second["updated"])
+
+    def test_skill_text_is_platform_and_agent_neutral(self) -> None:
+        self.assertIn("agentic tool", SKILL_MD)
+        self.assertNotIn("Codex", SKILL_MD)
+        self.assertNotIn("powershell", SKILL_MD.lower())
+        self.assertNotIn("UV_LINK_MODE", SKILL_MD)
+        self.assertNotIn("C:\\tmp", SKILL_MD)
 
     def test_remove_skill_removes_only_managed_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

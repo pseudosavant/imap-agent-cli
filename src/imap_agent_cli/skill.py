@@ -13,7 +13,7 @@ MANAGED_MARKER = "<!-- managed-by: imap-agent-cli -->"
 
 SKILL_MD = f"""---
 name: imap
-description: Use when the user asks Codex to search, read, summarize, inspect, or draft email using the local imap-agent-cli tool. Covers safe IMAP-only email access, folder enumeration, attachment download, and draft creation; must not send, delete, move, archive, flag, label, or mark messages read/unread.
+description: Use when the user asks an agentic tool to search, read, summarize, inspect, or draft email using imap-agent-cli. Covers safe IMAP-only email access, folder enumeration, attachment download, and draft creation; must not send, delete, move, archive, flag, label, or mark messages read/unread.
 ---
 
 {MANAGED_MARKER}
@@ -37,14 +37,13 @@ Use `imap-agent-cli` for safe agentic email workflows over IMAP. The tool can se
 
 Prefer the published CLI:
 
-```powershell
-$env:UV_LINK_MODE = "copy"
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli <command>
 ```
 
 If working inside the `imap-agent-cli` repository, this local form is also valid:
 
-```powershell
+```text
 uv run ./imap_agent_cli.py <command>
 ```
 
@@ -63,7 +62,7 @@ IMAP_AGENT_CLI_DRAFTS_FOLDER
 
 Use this to discover folder names and Drafts naming:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli folders
 ```
 
@@ -73,7 +72,7 @@ Return only relevant folder names/counts to the user unless they ask for the ful
 
 Search defaults to `INBOX` when no folder is provided:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --max-results 10
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
@@ -84,13 +83,13 @@ If a server-side `--from` search times out, enumerate recent messages with a bou
 
 For child folders:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder Projects --recursive --max-results 25
 ```
 
 For all folders, use sparingly because large mailboxes can be slow:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli search --all-folders --subject "contract" --max-results 25
 ```
 
@@ -98,7 +97,7 @@ uvx --refresh-package imap-agent-cli imap-agent-cli search --all-folders --subje
 
 Read a message by folder and UID from search results:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
 uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format plain --max-body-chars 12000
 uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format html
@@ -110,15 +109,15 @@ Use `metadata` first when confirming identity, attachments, or headers. Use `pla
 
 List attachment metadata:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli attachments --folder INBOX --uid 12345
 ```
 
 Download requires an explicit output directory:
 
-```powershell
-uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 1 --output-dir C:\\tmp\\email-attachments
-uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --all --output-dir C:\\tmp\\email-attachments
+```text
+uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 1 --output-dir ./email-attachments
+uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --all --output-dir ./email-attachments
 ```
 
 Report saved paths to the user.
@@ -127,13 +126,13 @@ Report saved paths to the user.
 
 Create a new draft:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli draft create --to person@example.com --subject "Subject" --body "Draft body"
 ```
 
 Create a reply draft from an existing message:
 
-```powershell
+```text
 uvx --refresh-package imap-agent-cli imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Draft reply body"
 ```
 

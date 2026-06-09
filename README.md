@@ -41,7 +41,7 @@ imap-agent-cli folders
 imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
 imap-agent-cli read --folder INBOX --uid 12345 --body-format html
 imap-agent-cli attachments --folder INBOX --uid 12345
-imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir C:\tmp\email-attachments
+imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
 imap-agent-cli draft create --to person@example.com --subject "Hello" --body "Draft only."
 imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Thanks. I will review this."
 ```
@@ -71,9 +71,9 @@ Config path:
 
 Secrets should stay in environment variables, not the config file.
 
-## Codex Skill
+## Agent Skill
 
-Install or update the user-scoped Codex skill:
+Install or update the user-scoped `imap` skill:
 
 ```text
 imap-agent-cli install-skill
@@ -94,7 +94,7 @@ imap-agent-cli remove-skill
 Use `--skills-dir PATH` to install into a nonstandard skills directory, for example:
 
 ```text
-imap-agent-cli install-skill --skills-dir C:\Users\PaulEllis\.agents\skills
+imap-agent-cli install-skill --skills-dir ~/.agents/skills
 ```
 
 ## Safety Boundary
