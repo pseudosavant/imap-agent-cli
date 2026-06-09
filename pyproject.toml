@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "imap-agent-cli"
+version = "0.1.0"
+description = "Agent-first IMAP CLI for safe email search, read, attachment download, and draft creation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+  { name = "Paul" },
+]
+keywords = ["imap", "email", "cli", "agent", "drafts"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Email",
+  "Topic :: Communications :: Email :: Post-Office :: IMAP",
+  "Topic :: Utilities",
+]
+dependencies = [
+  "IMAPClient>=3.0.0",
+  "beautifulsoup4>=4.12.0",
+  "bleach>=6.2.0",
+  "markdownify>=0.14.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pymap>=0.36.0",
+  "pytest>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/pseudosavant/imap-agent-cli"
+Repository = "https://github.com/pseudosavant/imap-agent-cli"
+Issues = "https://github.com/pseudosavant/imap-agent-cli/issues"
+
+[project.scripts]
+imap-agent-cli = "imap_agent_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imap_agent_cli"]
