@@ -36,6 +36,16 @@ uvx imap-agent-cli folders
 uvx imap-agent-cli search --subject invoice
 ```
 
+Install it as a persistent `uv` tool when you want to call `imap-agent-cli` directly:
+
+```text
+uv tool install imap-agent-cli
+uv tool update-shell
+imap-agent-cli --help
+```
+
+Restart your shell after `uv tool update-shell` if `imap-agent-cli` is not found.
+
 Or install it into a Python environment:
 
 ```text
