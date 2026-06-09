@@ -4,79 +4,86 @@
 
 It can inspect mailboxes and append messages to Drafts. It cannot send email, delete messages, move messages, archive messages, change labels, alter flags, or mark messages read/unread.
 
-## Status
+## Using imap-agent-cli
 
-This repo is under active development. The behavior target is defined in [`spec.md`](./spec.md).
+### Quick Start
 
-## Quick Start
+Install or update the `imap` agent skill:
 
-Single-profile env-var setup:
+```text
+uvx imap-agent-cli install-skill
+```
+
+Configure the default IMAP account with environment variables:
 
 ```text
 IMAP_AGENT_CLI_HOST=imap.example.com
 IMAP_AGENT_CLI_PORT=993
 IMAP_AGENT_CLI_USERNAME=me@example.com
-IMAP_AGENT_CLI_PASSWORD=...
+IMAP_AGENT_CLI_PASSWORD=your-password-or-app-password
 IMAP_AGENT_CLI_TLS=true
 ```
 
-Local development:
+Then ask your agentic tool to use the `imap` skill for mailbox search, email reading, attachment inspection/download, or draft creation.
 
-```text
-uv run ./imap_agent_cli.py --help
-uv run ./imap_agent_cli.py folders
-uv run ./imap_agent_cli.py search --subject invoice
-```
+### Use From PyPI
 
-Packaged execution:
+Use the published CLI directly with `uvx`:
 
 ```text
 uvx imap-agent-cli --help
+uvx imap-agent-cli folders
+uvx imap-agent-cli search --subject invoice
 ```
 
-## Examples
+Or install it into a Python environment:
 
 ```text
-imap-agent-cli folders
-imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
-imap-agent-cli read --folder INBOX --uid 12345 --body-format html
-imap-agent-cli attachments --folder INBOX --uid 12345
-imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
-imap-agent-cli draft create --to person@example.com --subject "Hello" --body "Draft only."
-imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Thanks. I will review this."
+python -m pip install imap-agent-cli
+imap-agent-cli --help
 ```
 
 All command payloads are JSON on stdout. Diagnostics and errors go to stderr.
 
-## Config
+### Configuration
 
-Create a starter config:
+For a single account, environment variables are enough:
+
+```text
+IMAP_AGENT_CLI_HOST=imap.example.com
+IMAP_AGENT_CLI_PORT=993
+IMAP_AGENT_CLI_USERNAME=me@example.com
+IMAP_AGENT_CLI_PASSWORD=your-password-or-app-password
+IMAP_AGENT_CLI_TLS=true
+IMAP_AGENT_CLI_DRAFTS_FOLDER=Drafts
+```
+
+`IMAP_AGENT_CLI_DRAFTS_FOLDER` is optional. When omitted, the CLI tries to auto-detect the Drafts folder.
+
+For multiple accounts, create a config file:
 
 ```text
 imap-agent-cli config init
-```
-
-Add a named profile:
-
-```text
 imap-agent-cli config add-profile work --host imap.example.com --port 993 --username me@example.com --password-env IMAP_AGENT_CLI_WORK_PASSWORD
 imap-agent-cli config set-default-profile work
 ```
 
-Config path:
+The config file is stored at:
 
 ```text
 ~/.imap-agent-cli/config.toml
 ```
 
-Secrets should stay in environment variables, not the config file.
+Keep secrets in environment variables. The config file should reference password environment variable names, not contain passwords.
 
-## Agent Skill
+### Agent Skill
+
+The installed skill teaches an agentic tool how to use `imap-agent-cli` safely and effectively.
 
 Install or update the user-scoped `imap` skill:
 
 ```text
-imap-agent-cli install-skill
+uvx imap-agent-cli install-skill
 ```
 
 This writes:
@@ -88,16 +95,16 @@ This writes:
 Remove the managed skill:
 
 ```text
-imap-agent-cli remove-skill
+uvx imap-agent-cli remove-skill
 ```
 
-Use `--skills-dir PATH` to install into a nonstandard skills directory, for example:
+Use `--skills-dir PATH` to install into a nonstandard skills directory:
 
 ```text
-imap-agent-cli install-skill --skills-dir ~/.agents/skills
+uvx imap-agent-cli install-skill --skills-dir ~/.agents/skills
 ```
 
-## Safety Boundary
+### Safety Boundary
 
 Allowed:
 
@@ -117,32 +124,61 @@ Not allowed:
 - mark read/unread
 - create/delete/rename folders
 
-## Testing
+### Example Commands
 
-No-network unit tests:
+These examples are mostly useful for validating configuration or debugging what an agentic tool is doing:
 
 ```text
-python -m unittest discover -v
+imap-agent-cli folders
+imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
+imap-agent-cli read --folder INBOX --uid 12345 --body-format html
+imap-agent-cli attachments --folder INBOX --uid 12345
+imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
+imap-agent-cli draft create --to person@example.com --subject "Hello" --body "Draft only."
+imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Thanks. I will review this."
 ```
 
-Package build:
+## Development
+
+### Local Development
+
+Run the CLI from the repository:
+
+```text
+uv run ./imap_agent_cli.py --help
+uv run ./imap_agent_cli.py folders
+uv run ./imap_agent_cli.py search --subject invoice
+```
+
+Build the package:
 
 ```text
 uv build --no-sources
 ```
 
-The spec targets `pymap` for future local IMAP integration tests on Windows without Docker.
+### Testing
 
-Opt-in local IMAP integration test:
+Run no-network unit tests:
 
 ```text
-$env:IMAP_AGENT_CLI_TEST_PYMAP = "1"
+python -m unittest discover -v
+```
+
+Run the opt-in local IMAP integration test:
+
+Set `IMAP_AGENT_CLI_TEST_PYMAP=1` in your shell, then run:
+
+```text
 uv run --extra test python -m unittest tests.test_pymap_integration -v
 ```
 
 The integration test starts `pymap dict --demo-data` locally and logs in with `demouser` / `demopass`.
 
-## Publishing
+### Project Status
+
+This repo is under active development. The behavior target is defined in [`spec.md`](./spec.md).
+
+### Publishing
 
 The GitHub Actions workflow is `.github/workflows/publish.yml`.
 
