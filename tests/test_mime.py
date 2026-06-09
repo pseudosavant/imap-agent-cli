@@ -10,6 +10,7 @@ from tests import _bootstrap  # noqa: F401
 from imap_agent_cli.mime import (
     attachment_infos,
     create_draft_message,
+    header_value,
     parse_message,
     render_body,
     safe_filename,
@@ -70,6 +71,17 @@ class MimeTests(unittest.TestCase):
     def test_safe_filename(self) -> None:
         self.assertEqual(safe_filename("../x:y?.txt"), "x_y_.txt")
         self.assertEqual(safe_filename(".."), "attachment")
+
+    def test_header_value_handles_malformed_message_id(self) -> None:
+        raw = (
+            b"Message-ID: <[8e15e2eaf6e3479a8a1c3d8230af2e58-JFZGS42DN5WW25LONFRWC5DJN5XFA3DBORTG64TNFVIHE33EFVGVOMKQPRAXU5LSMVCGK5SPOBZXYRLNMFUWY7CFPBXVG3LUOA======@microsoft.com]>\r\n"
+            b"Subject: Test\r\n"
+            b"\r\n"
+            b"Body\r\n"
+        )
+        message = parse_message(raw)
+        self.assertIn("@microsoft.com", header_value(message, "message-id"))
+        self.assertEqual(header_value(message, "subject"), "Test")
 
 
 if __name__ == "__main__":

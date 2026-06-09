@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import AppError
-from .mime import attachment_infos, message_headers, parse_message, render_body, save_attachments
+from .mime import attachment_infos, header_value, message_headers, parse_message, render_body, save_attachments
 from .models import Defaults, Profile
 from .search import build_criteria
 
@@ -172,8 +172,8 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         return {
             "folder": folder,
             "uid": uid,
-            "message_id": str(message.get("message-id", "")),
-            "date": str(message.get("date", "")),
+            "message_id": header_value(message, "message-id"),
+            "date": header_value(message, "date"),
             "from": headers["from"],
             "to": headers["to"],
             "cc": headers["cc"],
@@ -295,8 +295,8 @@ def message_payload(
         "profile": profile,
         "folder": folder,
         "uid": uid,
-        "message_id": str(message.get("message-id", "")),
-        "date": str(message.get("date", "")),
+        "message_id": header_value(message, "message-id"),
+        "date": header_value(message, "date"),
         "headers": message_headers(message),
         "body": render_body(message, body_format, max_body_chars),
         "attachments": [info for info in attachment_infos(message)],

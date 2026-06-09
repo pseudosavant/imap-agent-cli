@@ -10,7 +10,7 @@ from . import __version__
 from .config import add_profile, config_status, init_config, load_config, remove_profile, resolve_profile, set_default_profile
 from .errors import AppError, ConfigError
 from .imap_client import ImapSession
-from .mime import create_draft_message, parse_message
+from .mime import create_draft_message, header_value, parse_message
 from .render import write_error, write_json
 
 
@@ -256,15 +256,15 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
         raw = session._fetch_raw(str(folder), int(uid))
         source_message = parse_message(raw)
         to = _parse_repeated_addresses(args.to) or _string_list(payload.get("to")) or _reply_recipients(source_message)
-        source_message_id = str(source_message.get("message-id", ""))
-        source_refs = str(source_message.get("references", "")).strip()
+        source_message_id = header_value(source_message, "message-id")
+        source_refs = header_value(source_message, "references").strip()
         references = f"{source_refs} {source_message_id}".strip()
         message = create_draft_message(
             sender=session.profile.username,
             to=to,
             cc=_parse_repeated_addresses(args.cc) or _string_list(payload.get("cc")),
             bcc=_parse_repeated_addresses(args.bcc) or _string_list(payload.get("bcc")),
-            subject=args.subject or payload.get("subject") or _reply_subject(str(source_message.get("subject", ""))),
+            subject=args.subject or payload.get("subject") or _reply_subject(header_value(source_message, "subject")),
             body=body,
             body_format=str(body_format),
             attachments=attachments,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "imap-agent-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "Agent-first IMAP CLI for safe email search, read, attachment download, and draft creation"
 readme = "README.md"
 license = "MIT"

@@ -28,6 +28,21 @@ def parse_message(raw: bytes) -> EmailMessage:
     return parsed
 
 
+def header_value(message: Message, name: str, default: str = "") -> str:
+    target = name.lower()
+    try:
+        for key, value in message.raw_items():
+            if key.lower() == target:
+                return str(value)
+    except Exception:
+        pass
+    try:
+        value = message.get(name, default)
+    except Exception:
+        return default
+    return str(value) if value is not None else default
+
+
 def addresses(header_values: Iterable[str | None]) -> list[dict[str, str]]:
     raw = [value for value in header_values if value]
     return [{"name": name, "email": email} for name, email in getaddresses(raw)]
@@ -35,7 +50,7 @@ def addresses(header_values: Iterable[str | None]) -> list[dict[str, str]]:
 
 def message_headers(message: Message) -> dict[str, Any]:
     return {
-        "subject": str(message.get("subject", "")),
+        "subject": header_value(message, "subject"),
         "from": addresses(message.get_all("from", [])),
         "to": addresses(message.get_all("to", [])),
         "cc": addresses(message.get_all("cc", [])),
