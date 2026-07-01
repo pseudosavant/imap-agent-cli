@@ -15,6 +15,68 @@ from .render import write_error, write_json
 from .skill import install_skill, remove_skill
 
 
+PROJECT_URL = "https://github.com/pseudosavant/imap-agent-cli"
+LICENSE_NAME = "MIT"
+
+TOP_LEVEL_HELP = f"""imap-agent-cli - safe IMAP email access for agentic tools
+
+Safety:
+  Can: list folders, search, read without marking read, inspect/download attachments, create Drafts
+  Cannot: send, delete, move, archive, label, flag, mark read/unread
+
+Setup:
+  Required env vars for the default profile:
+    IMAP_AGENT_CLI_HOST
+    IMAP_AGENT_CLI_PORT
+    IMAP_AGENT_CLI_USERNAME
+    IMAP_AGENT_CLI_PASSWORD
+    IMAP_AGENT_CLI_TLS
+
+Common workflows:
+  imap-agent-cli folders
+  imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
+  imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
+  imap-agent-cli read --folder INBOX --uid 12345 --body-format html --max-body-chars 12000
+  imap-agent-cli attachments --folder INBOX --uid 12345
+  imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
+  imap-agent-cli draft create --to person@example.com --subject "Subject" --body-file ./draft.txt
+  imap-agent-cli draft reply --folder INBOX --uid 12345 --body-file ./reply.txt
+
+Output:
+  stdout is JSON payload only for operational commands
+  stderr is diagnostics/errors only
+
+Commands:
+  config          initialize and manage profile configuration
+  profiles        list configured profile names
+  install-skill   install or update the imap agent skill
+  remove-skill    remove the managed imap agent skill
+  folders         list folders
+  search          search messages
+  read            read a message by folder and UID
+  attachments     list or download attachments
+  draft           create new or reply drafts
+
+More help:
+  imap-agent-cli <command> --help
+  imap-agent-cli --about
+  imap-agent-cli --version
+
+Project:
+  {PROJECT_URL}
+License:
+  {LICENSE_NAME}
+"""
+
+ABOUT_TEXT = f"""imap-agent-cli {__version__}
+
+Safe IMAP email access for agentic tools.
+
+Project: {PROJECT_URL}
+License: {LICENSE_NAME}
+"""
+
+
 def _read_json_arg(value: str) -> dict[str, Any]:
     if value == "-":
         text = sys.stdin.read()
@@ -287,21 +349,25 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="imap-agent-cli")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser = argparse.ArgumentParser(
+        prog="imap-agent-cli",
+        description="Safe IMAP email access for agentic tools.",
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--about", action="store_true", help="show project and license information and exit")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    config = sub.add_parser("config")
+    config = sub.add_parser("config", help="initialize and manage profile configuration")
     config_sub = config.add_subparsers(dest="config_command", required=True)
-    config_init = config_sub.add_parser("init")
+    config_init = config_sub.add_parser("init", help="create a starter config file")
     config_init.add_argument("--from-env", action="store_true")
     config_init.set_defaults(func=cmd_config)
-    config_show = config_sub.add_parser("show")
+    config_show = config_sub.add_parser("show", help="show resolved config metadata without secrets")
     config_show.set_defaults(func=cmd_config)
-    config_default = config_sub.add_parser("set-default-profile")
+    config_default = config_sub.add_parser("set-default-profile", help="set the default profile")
     config_default.add_argument("name")
     config_default.set_defaults(func=cmd_config)
-    config_add = config_sub.add_parser("add-profile")
+    config_add = config_sub.add_parser("add-profile", help="add or update a named profile")
     config_add.add_argument("name")
     config_add.add_argument("--host", required=True)
     config_add.add_argument("--port", type=int, default=993)
@@ -312,27 +378,27 @@ def build_parser() -> argparse.ArgumentParser:
     config_add.add_argument("--ssl-mode", choices=["required", "preferred", "disabled"], default="required")
     config_add.add_argument("--drafts-folder", default="")
     config_add.set_defaults(func=cmd_config)
-    config_remove = config_sub.add_parser("remove-profile")
+    config_remove = config_sub.add_parser("remove-profile", help="remove a named profile from config")
     config_remove.add_argument("name")
     config_remove.set_defaults(func=cmd_config)
 
-    profiles = sub.add_parser("profiles")
+    profiles = sub.add_parser("profiles", help="list configured profile names")
     profiles.set_defaults(func=cmd_profiles)
 
-    install_skill_parser = sub.add_parser("install-skill")
+    install_skill_parser = sub.add_parser("install-skill", help="install or update the imap agent skill")
     install_skill_parser.add_argument("--skills-dir")
     install_skill_parser.set_defaults(func=cmd_install_skill)
 
-    remove_skill_parser = sub.add_parser("remove-skill")
+    remove_skill_parser = sub.add_parser("remove-skill", help="remove the managed imap agent skill")
     remove_skill_parser.add_argument("--skills-dir")
     remove_skill_parser.add_argument("--force", action="store_true")
     remove_skill_parser.set_defaults(func=cmd_remove_skill)
 
-    folders = sub.add_parser("folders")
+    folders = sub.add_parser("folders", help="list folders and folder metadata")
     _common_profile_args(folders)
     folders.set_defaults(func=cmd_folders)
 
-    search = sub.add_parser("search")
+    search = sub.add_parser("search", help="search messages by folder, subject, sender, or date range")
     _common_profile_args(search)
     search.add_argument("--json", dest="json_input")
     search.add_argument("--folder")
@@ -345,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--max-results", type=int)
     search.set_defaults(func=cmd_search)
 
-    read = sub.add_parser("read")
+    read = sub.add_parser("read", help="read a message by folder and UID without marking it read")
     _common_profile_args(read)
     read.add_argument("--json", dest="json_input")
     read.add_argument("--folder")
@@ -354,13 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
     read.add_argument("--max-body-chars", type=int)
     read.set_defaults(func=cmd_read)
 
-    attachments = sub.add_parser("attachments")
+    attachments = sub.add_parser("attachments", help="list attachment metadata for a message")
     _common_profile_args(attachments)
     attachments.add_argument("--folder")
     attachments.add_argument("--uid", type=int)
     attachments.set_defaults(func=cmd_attachments)
     attachments_sub = attachments.add_subparsers(dest="attachment_command")
-    download = attachments_sub.add_parser("download")
+    download = attachments_sub.add_parser("download", help="download selected attachments to a directory")
     _common_profile_args(download)
     download.add_argument("--folder", required=True)
     download.add_argument("--uid", required=True, type=int)
@@ -371,9 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--overwrite", action="store_true")
     download.set_defaults(func=cmd_attachments_download)
 
-    draft = sub.add_parser("draft")
+    draft = sub.add_parser("draft", help="create new or reply drafts")
     draft_sub = draft.add_subparsers(dest="draft_command", required=True)
-    create = draft_sub.add_parser("create")
+    create = draft_sub.add_parser("create", help="append a new message to Drafts")
     _common_profile_args(create)
     create.add_argument("--json", dest="json_input")
     create.add_argument("--to", action="append")
@@ -387,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--drafts-folder")
     create.set_defaults(func=cmd_draft_create)
 
-    reply = draft_sub.add_parser("reply")
+    reply = draft_sub.add_parser("reply", help="append a reply draft for an existing message")
     _common_profile_args(reply)
     reply.add_argument("--json", dest="json_input")
     reply.add_argument("--folder")
@@ -407,6 +473,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv or argv in (["--help"], ["-h"]):
+        sys.stdout.write(TOP_LEVEL_HELP)
+        return 0
+    if argv == ["--about"]:
+        sys.stdout.write(ABOUT_TEXT)
+        return 0
+    if argv == ["--version"]:
+        sys.stdout.write(f"{__version__}\n")
+        return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

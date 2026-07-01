@@ -55,6 +55,8 @@ imap-agent-cli --help
 
 All command payloads are JSON on stdout. Diagnostics and errors go to stderr.
 
+Use `imap-agent-cli --about` for project URL and license attribution. Use `imap-agent-cli --version` to print only the version number.
+
 ### Configuration
 
 For a single account, environment variables are enough:
