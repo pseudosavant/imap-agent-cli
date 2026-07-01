@@ -11,6 +11,37 @@ from tests import _bootstrap  # noqa: F401
 
 from imap_agent_cli import __version__
 from imap_agent_cli.cli import build_parser, main
+from imap_agent_cli.models import Config, Defaults, Profile
+
+
+class FakeCheckSession:
+    def __init__(self, profile: Profile, defaults: Defaults) -> None:
+        self.profile = profile
+        self.defaults = defaults
+        self.security = {"ssl_mode": profile.ssl_mode, "encrypted": True, "method": "implicit_tls"}
+
+    def __enter__(self) -> "FakeCheckSession":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def capabilities(self) -> list[str]:
+        return ["IMAP4REV1"]
+
+    def folders(self) -> dict[str, object]:
+        return {
+            "folders": [
+                {"name": "INBOX", "selectable": True, "special_use": "inbox"},
+                {"name": "Drafts", "selectable": True, "special_use": "drafts"},
+            ]
+        }
+
+    def _select(self, folder: str, *, readonly: bool = True) -> None:
+        return None
+
+    def resolve_drafts_folder(self) -> str:
+        return "Drafts"
 
 
 class CliTests(unittest.TestCase):
@@ -79,6 +110,31 @@ License: MIT
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["created"])
         self.assertEqual(payload["path"], str(config_path))
+
+    def test_config_check_outputs_diagnostics_json(self) -> None:
+        config = Config(
+            defaults=Defaults(),
+            profiles={
+                "default": Profile(
+                    name="default",
+                    host="imap.example.com",
+                    username="me@example.com",
+                    password="secret",
+                )
+            },
+        )
+        stdout = StringIO()
+        with (
+            patch("imap_agent_cli.cli.load_config", return_value=config),
+            patch("imap_agent_cli.cli.ImapSession", FakeCheckSession),
+            patch("sys.stdout", stdout),
+        ):
+            code = main(["config", "check"])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["profile"]["host"], "imap.example.com")
+        self.assertIn("login", {item["name"] for item in payload["checks"]})
 
     def test_read_missing_folder_errors_to_stderr(self) -> None:
         stderr = StringIO()

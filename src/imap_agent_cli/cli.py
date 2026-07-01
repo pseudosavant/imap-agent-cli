@@ -31,12 +31,15 @@ Setup:
     IMAP_AGENT_CLI_USERNAME
     IMAP_AGENT_CLI_PASSWORD
     IMAP_AGENT_CLI_TLS
+    IMAP_AGENT_CLI_SSL_MODE
 
 Common workflows:
   imap-agent-cli folders
   imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
+  imap-agent-cli search --folder INBOX --to "me@example.com" --has-attachments --max-results 10
   imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
-  imap-agent-cli read --folder INBOX --uid 12345 --body-format html --max-body-chars 12000
+  imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-attachments none --max-body-chars 12000
+  imap-agent-cli thread --folder INBOX --uid 12345 --include-body latest
   imap-agent-cli attachments --folder INBOX --uid 12345
   imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
   imap-agent-cli draft create --to person@example.com --subject "Subject" --body-file ./draft.txt
@@ -54,6 +57,7 @@ Commands:
   folders         list folders
   search          search messages
   read            read a message by folder and UID
+  thread          inspect bounded thread context
   attachments     list or download attachments
   draft           create new or reply drafts
 
@@ -131,6 +135,21 @@ def _max_body_chars(args: argparse.Namespace, payload: dict[str, Any] | None = N
     return load_config().defaults.max_body_chars
 
 
+def _include_attachments(value: Any) -> str:
+    text = str(value or "metadata").strip().lower()
+    if text in {"false", "none", "no", "0"}:
+        return "none"
+    if text in {"true", "metadata", "yes", "1"}:
+        return "metadata"
+    raise AppError("invalid_request", "--include-attachments must be none or metadata.")
+
+
+def _check_item(name: str, ok: bool, **details: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {"name": name, "ok": ok}
+    item.update(details)
+    return item
+
+
 def _body_from_args(args: argparse.Namespace, payload: dict[str, Any]) -> str:
     if getattr(args, "body", None) is not None:
         return args.body
@@ -168,6 +187,56 @@ def cmd_config(args: argparse.Namespace) -> int:
         path = init_config(from_env=args.from_env)
         write_json({"created": True, "path": str(path)})
         return 0
+    if args.config_command == "check":
+        checks: list[dict[str, Any]] = []
+        report: dict[str, Any] = {"ok": False, "checks": checks}
+        try:
+            config = load_config()
+            checks.append(_check_item("config_loaded", True, path=str(config.path)))
+            profile = resolve_profile(
+                config,
+                getattr(args, "profile", None),
+                host=getattr(args, "host", None),
+                port=getattr(args, "port", None),
+                username=getattr(args, "username", None),
+                password=_read_password(args),
+                tls=getattr(args, "tls", None),
+                ssl_mode=getattr(args, "ssl_mode", None),
+            )
+            report["profile"] = {
+                "name": profile.name,
+                "host": profile.host,
+                "port": profile.port,
+                "username": profile.username,
+                "password_env": profile.password_env,
+                "has_password": bool(profile.password),
+                "tls": profile.tls,
+                "ssl_mode": profile.ssl_mode,
+            }
+            checks.append(_check_item("profile_resolved", True))
+            checks.append(_check_item("password_available", bool(profile.password), password_env=profile.password_env))
+            with ImapSession(profile, config.defaults) as session:
+                checks.append(_check_item("login", True, security=session.security))
+                capabilities = session.capabilities()
+                checks.append(_check_item("capabilities", True, values=capabilities))
+                folders = session.folders()["folders"]
+                checks.append(_check_item("folders", True, count=len(folders)))
+                default_folder = config.defaults.default_folder
+                selectable = {str(folder["name"]) for folder in folders if folder.get("selectable")}
+                default_ok = default_folder in selectable
+                checks.append(_check_item("default_folder", default_ok, folder=default_folder))
+                if default_ok:
+                    session._select(default_folder, readonly=True)
+                try:
+                    drafts_folder = session.resolve_drafts_folder()
+                    checks.append(_check_item("drafts_folder", True, folder=drafts_folder))
+                except AppError as exc:
+                    checks.append(_check_item("drafts_folder", False, error=exc.message))
+        except AppError as exc:
+            checks.append(_check_item(exc.code, False, error=exc.message))
+        report["ok"] = all(item["ok"] for item in checks)
+        write_json(report)
+        return 0 if report["ok"] else 1
     if args.config_command == "show":
         write_json(config_status(load_config()))
         return 0
@@ -223,6 +292,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     folder = args.folder or payload.get("folder") or config.defaults.default_folder
     scope = payload.get("scope") or ("all" if args.all_folders else "recursive" if args.recursive else "folder")
     max_results = int(args.max_results or payload.get("max_results") or config.defaults.max_results)
+    max_scan = int(args.max_scan or payload.get("max_scan") or config.defaults.max_scan)
     with _session(args) as session:
         write_json(
             session.search(
@@ -230,9 +300,22 @@ def cmd_search(args: argparse.Namespace) -> int:
                 scope=str(scope),
                 subject=args.subject or payload.get("subject"),
                 sender=args.sender or payload.get("from"),
+                recipient=args.recipient or payload.get("to"),
+                message_id=args.message_id or payload.get("message_id"),
+                text=args.text or payload.get("text"),
                 since=args.since or payload.get("since"),
                 before=args.before or payload.get("before"),
+                unseen=bool(args.unseen or payload.get("unseen", False)),
+                seen=bool(args.seen or payload.get("seen", False)),
+                answered=bool(args.answered or payload.get("answered", False)),
+                flagged=bool(args.flagged or payload.get("flagged", False)),
+                larger=args.larger or payload.get("larger"),
+                smaller=args.smaller or payload.get("smaller"),
+                has_attachments=bool(args.has_attachments or payload.get("has_attachments", False)),
                 max_results=max_results,
+                max_scan=max_scan,
+                sort=str(args.sort or payload.get("sort") or "uid"),
+                order=str(args.order or payload.get("order") or "desc"),
             )
         )
     return 0
@@ -247,8 +330,38 @@ def cmd_read(args: argparse.Namespace) -> int:
     config = load_config()
     body_format = args.body_format or payload.get("body_format") or config.defaults.body_format
     max_body_chars = int(args.max_body_chars or payload.get("max_body_chars") or config.defaults.max_body_chars)
+    include_attachments = _include_attachments(args.include_attachments or payload.get("include_attachments") or "metadata")
     with _session(args) as session:
-        write_json(session.read(folder=str(folder), uid=int(uid), body_format=str(body_format), max_body_chars=max_body_chars))
+        write_json(
+            session.read(
+                folder=str(folder),
+                uid=int(uid),
+                body_format=str(body_format),
+                max_body_chars=max_body_chars,
+                include_attachments=include_attachments,
+            )
+        )
+    return 0
+
+
+def cmd_thread(args: argparse.Namespace) -> int:
+    if not args.folder or args.uid is None:
+        raise AppError("invalid_request", "thread requires --folder and --uid.")
+    config = load_config()
+    max_body_chars = int(args.max_body_chars or config.defaults.max_body_chars)
+    max_scan = int(args.max_scan or config.defaults.max_scan)
+    with _session(args) as session:
+        write_json(
+            session.thread(
+                folder=args.folder,
+                uid=args.uid,
+                max_messages=args.max_messages,
+                max_scan=max_scan,
+                include_body=args.include_body,
+                body_format=args.body_format,
+                max_body_chars=max_body_chars,
+            )
+        )
     return 0
 
 
@@ -362,6 +475,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_init = config_sub.add_parser("init", help="create a starter config file")
     config_init.add_argument("--from-env", action="store_true")
     config_init.set_defaults(func=cmd_config)
+    config_check = config_sub.add_parser("check", help="validate profile configuration and IMAP connectivity")
+    _common_profile_args(config_check)
+    config_check.set_defaults(func=cmd_config)
     config_show = config_sub.add_parser("show", help="show resolved config metadata without secrets")
     config_show.set_defaults(func=cmd_config)
     config_default = config_sub.add_parser("set-default-profile", help="set the default profile")
@@ -406,9 +522,22 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--all-folders", action="store_true")
     search.add_argument("--subject")
     search.add_argument("--from", dest="sender")
+    search.add_argument("--to", dest="recipient")
+    search.add_argument("--message-id")
+    search.add_argument("--text")
     search.add_argument("--since")
     search.add_argument("--before")
+    search.add_argument("--unseen", action="store_true")
+    search.add_argument("--seen", action="store_true")
+    search.add_argument("--answered", action="store_true")
+    search.add_argument("--flagged", action="store_true")
+    search.add_argument("--larger", type=int)
+    search.add_argument("--smaller", type=int)
+    search.add_argument("--has-attachments", action="store_true")
     search.add_argument("--max-results", type=int)
+    search.add_argument("--max-scan", type=int)
+    search.add_argument("--sort", choices=["uid", "date"], default=None)
+    search.add_argument("--order", choices=["asc", "desc"], default=None)
     search.set_defaults(func=cmd_search)
 
     read = sub.add_parser("read", help="read a message by folder and UID without marking it read")
@@ -418,7 +547,19 @@ def build_parser() -> argparse.ArgumentParser:
     read.add_argument("--uid", type=int)
     read.add_argument("--body-format", choices=["html", "markdown", "plain", "raw-html", "metadata"])
     read.add_argument("--max-body-chars", type=int)
+    read.add_argument("--include-attachments", choices=["none", "metadata", "false", "true"])
     read.set_defaults(func=cmd_read)
+
+    thread = sub.add_parser("thread", help="inspect bounded thread context for a message")
+    _common_profile_args(thread)
+    thread.add_argument("--folder", required=True)
+    thread.add_argument("--uid", required=True, type=int)
+    thread.add_argument("--max-messages", type=int, default=5)
+    thread.add_argument("--max-scan", type=int)
+    thread.add_argument("--include-body", choices=["none", "latest", "all"], default="none")
+    thread.add_argument("--body-format", choices=["html", "markdown", "plain", "raw-html", "metadata"], default="metadata")
+    thread.add_argument("--max-body-chars", type=int)
+    thread.set_defaults(func=cmd_thread)
 
     attachments = sub.add_parser("attachments", help="list attachment metadata for a message")
     _common_profile_args(attachments)

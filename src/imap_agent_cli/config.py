@@ -67,6 +67,7 @@ def _env_profile() -> Profile | None:
         return None
     defaults = Defaults(
         max_results=_env_int(f"{ENV_PREFIX}MAX_RESULTS", 25),
+        max_scan=_env_int(f"{ENV_PREFIX}MAX_SCAN", 250),
         max_body_chars=_env_int(f"{ENV_PREFIX}MAX_BODY_CHARS", 12000),
         connect_timeout_seconds=_env_int(f"{ENV_PREFIX}CONNECT_TIMEOUT_SECONDS", 15),
         read_timeout_seconds=_env_int(f"{ENV_PREFIX}READ_TIMEOUT_SECONDS", 30),
@@ -229,6 +230,7 @@ profile = "default"
 format = "json"
 default_folder = "INBOX"
 max_results = 25
+max_scan = 250
 max_body_chars = 12000
 connect_timeout_seconds = 15
 read_timeout_seconds = 30
@@ -288,6 +290,7 @@ def add_profile(
     raw["defaults"].setdefault("format", "json")
     raw["defaults"].setdefault("default_folder", "INBOX")
     raw["defaults"].setdefault("max_results", 25)
+    raw["defaults"].setdefault("max_scan", 250)
     raw["defaults"].setdefault("max_body_chars", 12000)
     raw["defaults"].setdefault("connect_timeout_seconds", 15)
     raw["defaults"].setdefault("read_timeout_seconds", 30)

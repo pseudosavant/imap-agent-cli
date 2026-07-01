@@ -241,7 +241,7 @@ def save_attachments(
     overwrite: bool = False,
 ) -> list[dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[dict[str, Any]] = []
+    selected: list[tuple[str, Message, Path, bytes, bool]] = []
     index = 1
     for part in message.walk():
         if part.is_multipart():
@@ -260,8 +260,17 @@ def save_attachments(
             continue
         payload = part.get_payload(decode=True) or b""
         target = output_dir / safe_filename(filename or f"part-{current_id}")
+        selected.append((current_id, part, target, payload, is_inline))
+    if not selected:
+        raise AppError("attachment_not_found", "no matching attachment was found.")
+    targets = [target.resolve() for _, _, target, _, _ in selected]
+    if len(set(targets)) != len(targets):
+        raise AppError("invalid_request", "multiple attachments resolve to the same output filename.")
+    for target in targets:
         if target.exists() and not overwrite:
             raise AppError("invalid_request", f"refusing to overwrite existing file: {target}")
+    saved: list[dict[str, Any]] = []
+    for current_id, part, target, payload, is_inline in selected:
         target.write_bytes(payload)
         saved.append(
             {
@@ -274,8 +283,6 @@ def save_attachments(
                 "inline": is_inline,
             }
         )
-    if not saved:
-        raise AppError("attachment_not_found", "no matching attachment was found.")
     return saved
 
 

@@ -67,6 +67,7 @@ IMAP_AGENT_CLI_PORT=993
 IMAP_AGENT_CLI_USERNAME=me@example.com
 IMAP_AGENT_CLI_PASSWORD=your-password-or-app-password
 IMAP_AGENT_CLI_TLS=true
+IMAP_AGENT_CLI_SSL_MODE=required
 IMAP_AGENT_CLI_DRAFTS_FOLDER=Drafts
 ```
 
@@ -87,6 +88,12 @@ The config file is stored at:
 ```
 
 Keep secrets in environment variables. The config file should reference password environment variable names, not contain passwords.
+
+Validate setup without reading message bodies:
+
+```text
+imap-agent-cli config check
+```
 
 ### Agent Skill
 
@@ -143,7 +150,10 @@ These examples are mostly useful for validating configuration or debugging what 
 ```text
 imap-agent-cli folders
 imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
-imap-agent-cli read --folder INBOX --uid 12345 --body-format html
+imap-agent-cli search --folder INBOX --from "Justin" --to "me@example.com" --max-results 10
+imap-agent-cli search --folder INBOX --has-attachments --max-results 10 --max-scan 100
+imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-attachments none
+imap-agent-cli thread --folder INBOX --uid 12345 --include-body latest --body-format plain
 imap-agent-cli attachments --folder INBOX --uid 12345
 imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 2 --output-dir ./email-attachments
 imap-agent-cli draft create --to person@example.com --subject "Hello" --body "Draft only."
@@ -185,6 +195,14 @@ uv run --extra test python -m unittest tests.test_pymap_integration -v
 ```
 
 The integration test starts `pymap dict --demo-data` locally and logs in with `demouser` / `demopass`.
+
+Run the opt-in live IMAP no-seen test only when you intentionally want to validate the configured mailbox:
+
+```text
+python -m unittest tests.test_live_no_seen -v
+```
+
+Set `IMAP_AGENT_CLI_LIVE_TEST=1` in your shell first. The test reads one unread message with no-seen fetch behavior and verifies the flags do not change. If no unread message exists, it skips.
 
 ### Project Status
 

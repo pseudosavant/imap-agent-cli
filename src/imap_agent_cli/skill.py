@@ -28,9 +28,10 @@ Use `imap-agent-cli` for safe agentic email workflows over IMAP. The tool can se
 - Never delete, move, archive, label, flag, star, mark read, or mark unread messages.
 - Prefer metadata/search before reading message bodies.
 - Do not print large or sensitive email bodies unless the user asks to see the content.
-- Use `--body-format metadata` when you only need headers and attachment metadata.
+- Use `--body-format metadata` and `--include-attachments none` when you only need headers.
 - Use `--body-format plain` for summaries unless HTML structure matters.
 - Download attachments only when the user asks and provides or accepts an output directory.
+- Prefer `thread --include-body none` or `thread --include-body latest` before reading multiple full messages.
 - Create drafts only with `draft create` or `draft reply`.
 
 ## Command Form
@@ -55,7 +56,16 @@ IMAP_AGENT_CLI_PORT
 IMAP_AGENT_CLI_USERNAME
 IMAP_AGENT_CLI_PASSWORD
 IMAP_AGENT_CLI_TLS
+IMAP_AGENT_CLI_SSL_MODE
 IMAP_AGENT_CLI_DRAFTS_FOLDER
+```
+
+## Configuration Check
+
+Use this first when setup may be wrong. It validates config, login, folders, default folder, and Drafts detection without reading message bodies:
+
+```text
+uvx --refresh-package imap-agent-cli imap-agent-cli config check
 ```
 
 ## Folder Listing
@@ -76,10 +86,21 @@ Search defaults to `INBOX` when no folder is provided:
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --max-results 10
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --to "me@example.com" --max-results 10
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --message-id "<message@example.com>" --max-results 10
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --has-attachments --max-results 10
 uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --since 2026-01-01 --before 2026-02-01 --max-results 10
 ```
 
-If a server-side `--from` search times out, enumerate recent messages with a bounded `--max-results` and filter locally by the returned `from` metadata.
+Search returns metadata summaries and does not fetch full message bodies. Use bounded `--max-results` and `--max-scan` values for broad searches.
+
+Other useful filters:
+
+```text
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --text "contract" --max-results 10
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --unseen --max-results 10
+uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --larger 10000 --smaller 500000 --max-results 10
+```
 
 For child folders:
 
@@ -100,10 +121,24 @@ Read a message by folder and UID from search results:
 ```text
 uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
 uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format plain --max-body-chars 12000
-uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format html
+uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-attachments none
 ```
 
-Use `metadata` first when confirming identity, attachments, or headers. Use `plain` when summarizing. Use `html` only when formatting or links matter.
+Use `metadata` first when confirming identity or headers. Use `--include-attachments none` when attachments are irrelevant, and `--include-attachments metadata` when attachment names/types/sizes matter. Use `plain` when summarizing. Use `html` only when formatting or links matter.
+
+## Thread Context
+
+Use thread context when preparing a reply or understanding conversation state. Start with metadata-only context:
+
+```text
+uvx --refresh-package imap-agent-cli imap-agent-cli thread --folder INBOX --uid 12345 --max-messages 5
+```
+
+Include only the latest body when needed:
+
+```text
+uvx --refresh-package imap-agent-cli imap-agent-cli thread --folder INBOX --uid 12345 --include-body latest --body-format plain --max-body-chars 6000
+```
 
 ## Attachments
 

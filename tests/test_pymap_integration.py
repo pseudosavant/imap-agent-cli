@@ -83,6 +83,7 @@ class PymapIntegrationTests(unittest.TestCase):
                 "IMAP_AGENT_CLI_USERNAME": "demouser",
                 "IMAP_AGENT_CLI_PASSWORD": "demopass",
                 "IMAP_AGENT_CLI_TLS": "false",
+                "IMAP_AGENT_CLI_SSL_MODE": "disabled",
             }
             folders = _run_cli(["folders"], env)
             folder_names = {folder["name"] for folder in folders["folders"]}  # type: ignore[index]

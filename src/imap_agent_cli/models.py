@@ -10,6 +10,7 @@ class Defaults:
     format: str = "json"
     default_folder: str = "INBOX"
     max_results: int = 25
+    max_scan: int = 250
     max_body_chars: int = 12000
     connect_timeout_seconds: int = 15
     read_timeout_seconds: int = 30

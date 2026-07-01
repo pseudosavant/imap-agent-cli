@@ -29,13 +29,16 @@ The core safety boundary is strict: never add support for sending email, deletin
 - Keep README and skill language platform-neutral and agent-tool-neutral. Avoid shell-specific syntax unless explicitly documenting a shell-specific example.
 - If changing installed-skill behavior or wording, update `src/imap_agent_cli/skill.py` and `tests/test_skill.py` together.
 - If changing MIME parsing, body rendering, draft creation, or search behavior, add focused tests for the contract being changed.
+- If changing search output, preserve metadata-first behavior; search should not fetch full message bodies.
 
 ## Safety-Sensitive Implementation Notes
 
 - Reads must avoid changing message state. Preserve no-seen fetch behavior.
+- `ssl_mode=required` and `ssl_mode=preferred` must never send credentials over plaintext. Plaintext login is allowed only with `ssl_mode=disabled`.
 - Draft creation is allowed only by appending a new MIME message to the detected or configured Drafts folder.
 - Reply drafts should preserve appropriate reply headers such as `In-Reply-To` and `References`.
 - Attachment downloads require explicit user/agent intent and an output directory.
+- Attachment downloads should preflight target filenames before writing, so a failed multi-attachment download does not partially write files.
 - Folder-wide or all-folder operations should remain bounded by defaults and overridable limits.
 - HTML email is untrusted input. Sanitize before returning HTML and keep Markdown conversion intentionally lossy but predictable.
 
@@ -62,6 +65,14 @@ uv run --extra test python -m unittest tests.test_pymap_integration -v
 ```
 
 Set `IMAP_AGENT_CLI_TEST_PYMAP=1` in the shell before running the integration test. The test starts `pymap dict --demo-data` locally and logs in with demo credentials.
+
+Run the optional live no-seen test only when intentionally validating a configured mailbox:
+
+```text
+python -m unittest tests.test_live_no_seen -v
+```
+
+Set `IMAP_AGENT_CLI_LIVE_TEST=1` first. The test reads one unread message and verifies flags do not change; it skips when no unread message is available.
 
 Build the package:
 
