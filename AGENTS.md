@@ -73,6 +73,7 @@ uv build --no-sources
 
 - Package metadata lives in `pyproject.toml`.
 - The GitHub Actions publish workflow is `.github/workflows/publish.yml`.
+- Publishing runs when a version tag such as `0.1.4` is pushed, or when the workflow is manually dispatched.
 - PyPI Trusted Publishing uses:
   - Project: `imap-agent-cli`
   - Owner: `pseudosavant`

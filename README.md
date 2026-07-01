@@ -194,6 +194,8 @@ This repo is under active development. The behavior target is defined in [`spec.
 
 The GitHub Actions workflow is `.github/workflows/publish.yml`.
 
+Publishing runs when a version tag such as `0.1.4` is pushed. The workflow can also be run manually.
+
 PyPI Trusted Publishing values:
 
 ```text
