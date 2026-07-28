@@ -34,6 +34,8 @@ class SkillTests(unittest.TestCase):
 
     def test_skill_text_is_platform_and_agent_neutral(self) -> None:
         self.assertIn("agentic tool", SKILL_MD)
+        self.assertIn("uvx imap-agent-cli <command>", SKILL_MD)
+        self.assertNotIn("--refresh-package", SKILL_MD)
         self.assertNotIn("Codex", SKILL_MD)
         self.assertNotIn("powershell", SKILL_MD.lower())
         self.assertNotIn("UV_LINK_MODE", SKILL_MD)

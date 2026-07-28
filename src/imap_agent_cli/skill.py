@@ -39,7 +39,7 @@ Use `imap-agent-cli` for safe agentic email workflows over IMAP. The tool can se
 Prefer the published CLI:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli <command>
+uvx imap-agent-cli <command>
 ```
 
 If working inside the `imap-agent-cli` repository, this local form is also valid:
@@ -65,7 +65,7 @@ IMAP_AGENT_CLI_DRAFTS_FOLDER
 Use this first when setup may be wrong. It validates config, login, folders, default folder, and Drafts detection without reading message bodies:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli config check
+uvx imap-agent-cli config check
 ```
 
 ## Folder Listing
@@ -73,7 +73,7 @@ uvx --refresh-package imap-agent-cli imap-agent-cli config check
 Use this to discover folder names and Drafts naming:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli folders
+uvx imap-agent-cli folders
 ```
 
 Return only relevant folder names/counts to the user unless they ask for the full list.
@@ -83,13 +83,13 @@ Return only relevant folder names/counts to the user unless they ask for the ful
 Search defaults to `INBOX` when no folder is provided:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --to "me@example.com" --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --message-id "<message@example.com>" --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --has-attachments --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --since 2026-01-01 --before 2026-02-01 --max-results 10
+uvx imap-agent-cli search --folder INBOX --max-results 10
+uvx imap-agent-cli search --folder INBOX --subject "invoice" --max-results 10
+uvx imap-agent-cli search --folder INBOX --from "Justin" --max-results 10
+uvx imap-agent-cli search --folder INBOX --to "me@example.com" --max-results 10
+uvx imap-agent-cli search --folder INBOX --message-id "<message@example.com>" --max-results 10
+uvx imap-agent-cli search --folder INBOX --has-attachments --max-results 10
+uvx imap-agent-cli search --folder INBOX --since 2026-01-01 --before 2026-02-01 --max-results 10
 ```
 
 Search returns metadata summaries and does not fetch full message bodies. Use bounded `--max-results` and `--max-scan` values for broad searches.
@@ -97,21 +97,21 @@ Search returns metadata summaries and does not fetch full message bodies. Use bo
 Other useful filters:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --text "contract" --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --unseen --max-results 10
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder INBOX --larger 10000 --smaller 500000 --max-results 10
+uvx imap-agent-cli search --folder INBOX --text "contract" --max-results 10
+uvx imap-agent-cli search --folder INBOX --unseen --max-results 10
+uvx imap-agent-cli search --folder INBOX --larger 10000 --smaller 500000 --max-results 10
 ```
 
 For child folders:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli search --folder Projects --recursive --max-results 25
+uvx imap-agent-cli search --folder Projects --recursive --max-results 25
 ```
 
 For all folders, use sparingly because large mailboxes can be slow:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli search --all-folders --subject "contract" --max-results 25
+uvx imap-agent-cli search --all-folders --subject "contract" --max-results 25
 ```
 
 ## Read
@@ -119,9 +119,9 @@ uvx --refresh-package imap-agent-cli imap-agent-cli search --all-folders --subje
 Read a message by folder and UID from search results:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
-uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format plain --max-body-chars 12000
-uvx --refresh-package imap-agent-cli imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-attachments none
+uvx imap-agent-cli read --folder INBOX --uid 12345 --body-format metadata
+uvx imap-agent-cli read --folder INBOX --uid 12345 --body-format plain --max-body-chars 12000
+uvx imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-attachments none
 ```
 
 Use `metadata` first when confirming identity or headers. Use `--include-attachments none` when attachments are irrelevant, and `--include-attachments metadata` when attachment names/types/sizes matter. Use `plain` when summarizing. Use `html` only when formatting or links matter.
@@ -131,13 +131,13 @@ Use `metadata` first when confirming identity or headers. Use `--include-attachm
 Use thread context when preparing a reply or understanding conversation state. Start with metadata-only context:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli thread --folder INBOX --uid 12345 --max-messages 5
+uvx imap-agent-cli thread --folder INBOX --uid 12345 --max-messages 5
 ```
 
 Include only the latest body when needed:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli thread --folder INBOX --uid 12345 --include-body latest --body-format plain --max-body-chars 6000
+uvx imap-agent-cli thread --folder INBOX --uid 12345 --include-body latest --body-format plain --max-body-chars 6000
 ```
 
 ## Attachments
@@ -145,14 +145,14 @@ uvx --refresh-package imap-agent-cli imap-agent-cli thread --folder INBOX --uid 
 List attachment metadata:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli attachments --folder INBOX --uid 12345
+uvx imap-agent-cli attachments --folder INBOX --uid 12345
 ```
 
 Download requires an explicit output directory:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 1 --output-dir ./email-attachments
-uvx --refresh-package imap-agent-cli imap-agent-cli attachments download --folder INBOX --uid 12345 --all --output-dir ./email-attachments
+uvx imap-agent-cli attachments download --folder INBOX --uid 12345 --part-id 1 --output-dir ./email-attachments
+uvx imap-agent-cli attachments download --folder INBOX --uid 12345 --all --output-dir ./email-attachments
 ```
 
 Report saved paths to the user.
@@ -162,13 +162,13 @@ Report saved paths to the user.
 Create a new draft:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli draft create --to person@example.com --subject "Subject" --body "Draft body"
+uvx imap-agent-cli draft create --to person@example.com --subject "Subject" --body "Draft body"
 ```
 
 Create a reply draft from an existing message:
 
 ```text
-uvx --refresh-package imap-agent-cli imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Draft reply body"
+uvx imap-agent-cli draft reply --folder INBOX --uid 12345 --body "Draft reply body"
 ```
 
 For longer draft bodies, write a temporary body file and pass `--body-file`. Tell the user a draft was created; do not imply it was sent.
