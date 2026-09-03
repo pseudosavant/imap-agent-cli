@@ -15,6 +15,11 @@ from imap_agent_cli.skill import MANAGED_MARKER, SKILL_MD, install_skill, remove
 
 
 class SkillTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("imap_agent_cli.skill.default_skills_dir", return_value=Path(directory)))
+        self.enterContext(patch("imap_agent_cli.skill.is_local_development", return_value=True))
+
     def test_install_skill_creates_and_updates_managed_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -25,7 +30,8 @@ class SkillTests(unittest.TestCase):
             self.assertTrue(skill_path.exists())
             content = skill_path.read_text(encoding="utf-8")
             self.assertIn("name: imap", content)
-            self.assertIn(MANAGED_MARKER, content)
+            self.assertNotIn(MANAGED_MARKER, content)
+            self.assertIn("managed-by: imap-agent-cli", content)
             self.assertIn("draft reply", content)
 
             second = install_skill(root)

@@ -5,6 +5,8 @@
 #   "beautifulsoup4>=4.12.0",
 #   "bleach>=6.2.0",
 #   "markdownify>=0.14.0",
+#   "packaging>=23.2",
+#   "PyYAML>=6.0",
 # ]
 # ///
 """Local development wrapper for imap-agent-cli."""

@@ -319,6 +319,26 @@ imap-agent-cli config add-profile work --preset generic-ssl-993 --host colo-mail
 
 All commands output JSON to stdout by default. Diagnostics and errors go to stderr.
 
+## Managed Agent Skill
+
+The distribution and command are `imap-agent-cli`. The Python import package is `imap_agent_cli`. The skill is `imap`, installed at `~/.agents/skills/imap/SKILL.md` by `uvx imap-agent-cli skill install`. The original `install-skill` and `remove-skill` commands remain aliases.
+
+`imap_agent_cli.__version__` is the runtime authority and must match `--version`. Canonical skill generation writes `metadata.managed-by: imap-agent-cli`, a quoted `metadata.managed-version`, and a quoted `metadata.managed-content-sha256` with the `sha256:` prefix and 64 lowercase hexadecimal characters. There is no top-level version or sidecar file. The bundled instructions continue to prefer `uvx`.
+
+The content hash covers the entire UTF-8 file after normalizing CRLF and CR to LF and replacing only the hash field's value with `""`. Verification uses the installed text without reserializing YAML. Generated files have LF endings, a trailing newline, and no byte order mark. This detects modifications and is not a signature.
+
+Ordinary invocations, including help, version, about, and no arguments, check only an already-installed skill in the standard location. Skill-management commands skip this check. Compare versions with PEP 440. Replace pristine older managed content. Preserve equal or newer versions and unmanaged content. Preserve older content with a missing, malformed, or mismatched hash and recommend `uvx imap-agent-cli skill install --force`.
+
+The legacy HTML marker remains recognized unless front matter assigns ownership to another tool. Legacy content without a version migrates as version 0. Missing or malformed managed versions intentionally recover through replacement without integrity verification. Newly generated metadata becomes authoritative.
+
+`skill install` creates missing skills and updates pristine older managed skills. `--force` permits replacement of altered managed content, including at the same version. It never overwrites unmanaged content or downgrades a newer version. `skill remove` manages only `SKILL.md`, keeps unrelated files, and retains its explicit force override for unmanaged files. Unexpected directories and linked skill paths are refused.
+
+`skill status` is read-only. JSON is the default, with `--format plain` available. Report path, installation and ownership, running and installed versions, version relationship, integrity, automatic eligibility, local-development exclusion, and any force recommendation. All skill commands accept `--skills-dir PATH`. Custom locations require explicit updates.
+
+Automatic synchronization excludes local checkouts, local source installations, editable builds, and unverified installation origins. Use installed-distribution file records and PEP 610 metadata. Built wheel installations remain eligible. Explicit skill commands work from development builds.
+
+Synchronization performs no package-index lookup, uv cache refresh, or CLI update. Replacement uses a flushed and closed temporary file in the target directory and an atomic replace after rechecking the installed bytes. Concurrent changes abort that attempt. Failures do not change the primary command's exit status. Notices go only to stderr. Updates apply to future skill loading and may not change instructions already loaded in an agent session.
+
 ## Folder Commands
 
 List folders:

@@ -12,7 +12,7 @@ from .errors import AppError, ConfigError
 from .imap_client import ImapSession
 from .mime import create_draft_message, header_value, parse_message
 from .render import write_error, write_json
-from .skill import install_skill, remove_skill
+from .skill import install_skill, remove_skill, skill_status, sync_skill
 
 
 PROJECT_URL = "https://github.com/pseudosavant/imap-agent-cli"
@@ -52,14 +52,23 @@ Output:
 Commands:
   config          initialize and manage profile configuration
   profiles        list configured profile names
-  install-skill   install or update the imap agent skill
-  remove-skill    remove the managed imap agent skill
+  skill           install, inspect status, or remove the imap agent skill
+  install-skill   alias for skill install
+  remove-skill    alias for skill remove
   folders         list folders
   search          search messages
   read            read a message by folder and UID
   thread          inspect bounded thread context
   attachments     list or download attachments
   draft           create new or reply drafts
+
+Agent skill:
+  uvx imap-agent-cli skill install
+  uvx imap-agent-cli skill status
+  uvx imap-agent-cli skill install --force
+  Installed managed skills in ~/.agents/skills/imap synchronize to newer CLI versions.
+  Modified skills are preserved. Local development builds skip synchronization.
+  Custom locations require explicit updates with --skills-dir PATH.
 
 More help:
   imap-agent-cli <command> --help
@@ -271,13 +280,44 @@ def cmd_profiles(args: argparse.Namespace) -> int:
 
 
 def cmd_install_skill(args: argparse.Namespace) -> int:
-    write_json(install_skill(Path(args.skills_dir) if args.skills_dir else None))
+    write_json(_skill_result(args, install_skill, force=args.force))
     return 0
 
 
 def cmd_remove_skill(args: argparse.Namespace) -> int:
-    write_json(remove_skill(Path(args.skills_dir) if args.skills_dir else None, force=args.force))
+    write_json(_skill_result(args, remove_skill, force=args.force))
     return 0
+
+
+def _skill_result(args: argparse.Namespace, operation: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return operation(Path(args.skills_dir).expanduser() if args.skills_dir else None, **kwargs)
+    except (OSError, UnicodeError) as exc:
+        raise AppError("invalid_request", "skill operation failed. Check the skill path, UTF-8 encoding, and file permissions.") from exc
+
+
+def cmd_skill_status(args: argparse.Namespace) -> int:
+    result = _skill_result(args, skill_status)
+    if args.format == "plain":
+        for key, value in result.items():
+            rendered = json.dumps(value) if value is None or isinstance(value, bool) else str(value)
+            sys.stdout.write(f"{key.replace('_', ' ')}: {rendered}\n")
+    else:
+        write_json(result)
+    return 0
+
+
+def _skill_parser(parser: argparse.ArgumentParser, action: str) -> None:
+    parser.add_argument("--skills-dir", metavar="PATH", help="skills root directory (default: ~/.agents/skills). Custom locations require explicit updates")
+    if action == "install":
+        parser.add_argument("--force", action="store_true", help="replace altered managed content. Never overwrite unmanaged skills or downgrade a newer version")
+        parser.set_defaults(func=cmd_install_skill)
+    elif action == "remove":
+        parser.add_argument("--force", action="store_true", help="allow removal of an unmanaged SKILL.md. Keep unrelated files")
+        parser.set_defaults(func=cmd_remove_skill)
+    else:
+        parser.add_argument("--format", choices=["json", "plain"], default="json", help="status output format (default: json). This command never modifies the skill")
+        parser.set_defaults(func=cmd_skill_status)
 
 
 def cmd_folders(args: argparse.Namespace) -> int:
@@ -501,14 +541,16 @@ def build_parser() -> argparse.ArgumentParser:
     profiles = sub.add_parser("profiles", help="list configured profile names")
     profiles.set_defaults(func=cmd_profiles)
 
-    install_skill_parser = sub.add_parser("install-skill", help="install or update the imap agent skill")
-    install_skill_parser.add_argument("--skills-dir")
-    install_skill_parser.set_defaults(func=cmd_install_skill)
-
-    remove_skill_parser = sub.add_parser("remove-skill", help="remove the managed imap agent skill")
-    remove_skill_parser.add_argument("--skills-dir")
-    remove_skill_parser.add_argument("--force", action="store_true")
-    remove_skill_parser.set_defaults(func=cmd_remove_skill)
+    skill = sub.add_parser("skill", help="manage the imap agent skill", description="Manage SKILL.md explicitly. These commands skip automatic synchronization.")
+    skill_sub = skill.add_subparsers(dest="skill_command", required=True)
+    for action, description in (
+        ("install", "install a missing skill or update pristine older managed content"),
+        ("remove", "remove SKILL.md and keep unrelated files"),
+        ("status", "inspect version, integrity, and automatic synchronization eligibility without writing"),
+    ):
+        _skill_parser(skill_sub.add_parser(action, help=description, description=description), action)
+    _skill_parser(sub.add_parser("install-skill", help="alias for skill install"), "install")
+    _skill_parser(sub.add_parser("remove-skill", help="alias for skill remove"), "remove")
 
     folders = sub.add_parser("folders", help="list folders and folder metadata")
     _common_profile_args(folders)
@@ -616,6 +658,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    # Global options take no values. Recognize the command before argparse can
+    # exit for help or version, including help for skill-management commands.
+    command = next((arg for arg in argv if not arg.startswith("-")), None)
+    if command not in {"skill", "install-skill", "remove-skill"}:
+        sync_skill()
     if not argv or argv in (["--help"], ["-h"]):
         sys.stdout.write(TOP_LEVEL_HELP)
         return 0

@@ -11,7 +11,7 @@ It can inspect mailboxes and append messages to Drafts. It cannot send email, de
 Install or update the `imap` agent skill:
 
 ```text
-uvx imap-agent-cli install-skill
+uvx imap-agent-cli skill install
 ```
 
 Configure the default IMAP account with environment variables:
@@ -53,7 +53,7 @@ python -m pip install imap-agent-cli
 imap-agent-cli --help
 ```
 
-All command payloads are JSON on stdout. Diagnostics and errors go to stderr.
+Command payloads are JSON on stdout by default. Skill status also offers `--format plain`. Diagnostics and errors go to stderr.
 
 Use `imap-agent-cli --about` for project URL and license attribution. Use `imap-agent-cli --version` to print only the version number.
 
@@ -97,12 +97,12 @@ imap-agent-cli config check
 
 ### Agent Skill
 
-The installed skill teaches an agentic tool how to use `imap-agent-cli` safely and effectively.
+The installed skill teaches an agentic tool how to use `imap-agent-cli` safely through `uvx`.
 
 Install or update the user-scoped `imap` skill:
 
 ```text
-uvx imap-agent-cli install-skill
+uvx imap-agent-cli skill install
 ```
 
 This writes:
@@ -111,17 +111,43 @@ This writes:
 ~/.agents/skills/imap/SKILL.md
 ```
 
+Normally installed CLI builds check this location on every ordinary invocation, including help, version, and about output. An already-installed managed skill from an older CLI version is replaced only if its recorded content hash still matches. Missing skills are never installed automatically. Unmanaged skills, equal versions, and newer versions are left alone.
+
+The running CLI version is the authority. Synchronization is local. It does not query PyPI, refresh uv's cache, or update uv or the CLI. Updating those tools remains a separate action. Skill-management commands skip automatic synchronization.
+
+Inspect the installed version, content integrity, and synchronization eligibility without changing the skill:
+
+```text
+uvx imap-agent-cli skill status
+uvx imap-agent-cli skill status --format plain
+```
+
+Modified skills and skills with valid versions but missing or invalid hashes are preserved. To replace managed content explicitly:
+
+```text
+uvx imap-agent-cli skill install --force
+```
+
+Install-time `--force` still refuses unmanaged content and never downgrades a newer skill. Legacy skills with the old HTML managed marker migrate once as version 0. Missing or malformed managed versions receive a fresh replacement without a hash check. Ownership, version, and the SHA-256 content hash are stored in `SKILL.md` front matter under `metadata`. The hash detects edits. It is not a signature.
+
 Remove the managed skill:
 
 ```text
-uvx imap-agent-cli remove-skill
+uvx imap-agent-cli skill remove
 ```
 
-Use `--skills-dir PATH` to install into a nonstandard skills directory:
+Removal deletes only `SKILL.md` and removes its directory if empty. Unrelated files are kept. Removal retains `--force` for explicitly removing an unmanaged `SKILL.md`. The original `install-skill` and `remove-skill` aliases remain supported.
+
+Use `--skills-dir PATH` on any skill command to select a custom skills root. Custom locations require explicit updates and are never discovered by ordinary invocations:
 
 ```text
-uvx imap-agent-cli install-skill --skills-dir ~/.agents/skills
+uvx imap-agent-cli skill install --skills-dir ./my-skills
+uvx imap-agent-cli skill status --skills-dir ./my-skills
 ```
+
+Local checkouts, local source installs, and editable builds do not synchronize automatically. Unverifiable installation origins are also skipped. Explicit installation still works from development builds, including `uvx --from . imap-agent-cli skill install`. Installed wheels remain eligible, including wheels installed from a local file.
+
+An update affects future agent skill loading. An agent session may retain instructions it has already loaded.
 
 ### Safety Boundary
 
@@ -185,6 +211,14 @@ Run no-network unit tests:
 ```text
 python -m unittest discover -v
 ```
+
+To validate an installed wheel and local-source exclusions, build the package and set `IMAP_AGENT_CLI_WHEEL_TEST` to the wheel's path. Then run:
+
+```text
+python -m unittest tests.test_wheel_smoke -v
+```
+
+This opt-in check uses uv to install into a temporary environment with a temporary home directory. The regular tests also isolate skill paths from your home directory.
 
 Run the opt-in local IMAP integration test:
 

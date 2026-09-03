@@ -45,6 +45,11 @@ class FakeCheckSession:
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("imap_agent_cli.skill.default_skills_dir", return_value=Path(directory)))
+        self.enterContext(patch("imap_agent_cli.skill.is_local_development", return_value=True))
+
     def test_help_parser_has_expected_commands(self) -> None:
         parser = build_parser()
         parsed = parser.parse_args(["search", "--subject", "invoice"])

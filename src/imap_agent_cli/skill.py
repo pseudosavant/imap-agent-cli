@@ -1,22 +1,37 @@
 from __future__ import annotations
 
-import shutil
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
+import yaml
+from packaging.version import InvalidVersion, Version
+from yaml.nodes import MappingNode, Node, ScalarNode
+
+from . import __version__
 from .errors import AppError
+from .runtime import DISTRIBUTION_NAME, is_local_development
 
 
 SKILL_NAME = "imap"
 MANAGED_MARKER = "<!-- managed-by: imap-agent-cli -->"
+FORCE_INSTALL_COMMAND = "uvx imap-agent-cli skill install --force"
+HASH_FIELD = "managed-content-sha256"
 
 
-SKILL_MD = f"""---
+_SKILL_TEMPLATE = """---
 name: imap
 description: Use when the user asks an agentic tool to search, read, summarize, inspect, or draft email using imap-agent-cli. Covers safe IMAP-only email access, folder enumeration, attachment download, and draft creation; must not send, delete, move, archive, flag, label, or mark messages read/unread.
+metadata:
+  managed-by: imap-agent-cli
+  managed-version: {managed_version}
+  managed-content-sha256: ""
 ---
-
-{MANAGED_MARKER}
 
 # IMAP Email Access
 
@@ -187,33 +202,275 @@ def skill_dir(skills_dir: Path | None = None) -> Path:
     return (skills_dir or default_skills_dir()) / SKILL_NAME
 
 
-def install_skill(skills_dir: Path | None = None) -> dict[str, Any]:
-    target = skill_dir(skills_dir)
-    target.mkdir(parents=True, exist_ok=True)
-    skill_path = target / "SKILL.md"
-    previous = skill_path.read_text(encoding="utf-8") if skill_path.exists() else ""
-    updated = previous != SKILL_MD
-    skill_path.write_text(SKILL_MD, encoding="utf-8")
-    return {
-        "installed": True,
-        "updated": updated,
-        "skill": SKILL_NAME,
-        "path": str(skill_path),
+def _normalize(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _mapping(node: Node | None) -> dict[str, Node]:
+    if not isinstance(node, MappingNode):
+        raise AppError("invalid_request", "skill front matter and metadata must be YAML mappings.")
+    result = {}
+    for key, value in node.value:
+        if not isinstance(key, ScalarNode) or key.tag != "tag:yaml.org,2002:str" or key.value in result:
+            raise AppError("invalid_request", "skill metadata contains ambiguous or duplicate YAML keys.")
+        # Merged mappings can hide a conflicting owner or an aliased hash value.
+        if key.value == "<<":
+            raise AppError("invalid_request", "merged skill metadata cannot be verified.")
+        result[key.value] = value
+    return result
+
+
+def _front_matter(text: str) -> tuple[dict[str, Node], int]:
+    """Return metadata nodes and their offset in the normalized complete file.
+
+    Node marks let hashing blank only the hash value. Never serialize installed
+    YAML, since comments, whitespace and unrelated fields are part of the hash.
+    """
+    opening = re.match(r"\A\ufeff?---[ \t]*\n", text)
+    if opening is None:
+        return {}, 0
+    offset = opening.end()
+    end = re.search(r"(?m)^---[ \t]*(?:\n|$)", text[offset:])
+    if end is None:
+        raise AppError("invalid_request", "skill YAML front matter is not closed.")
+    try:
+        root = _mapping(yaml.compose(text[offset:offset + end.start()], Loader=yaml.SafeLoader))
+    except yaml.YAMLError as exc:
+        raise AppError("invalid_request", "skill YAML front matter could not be parsed.") from exc
+    if "metadata" not in root:
+        return {}, offset
+    return _mapping(root["metadata"]), offset
+
+
+def _string(node: Node | None) -> str | None:
+    if isinstance(node, ScalarNode) and node.tag == "tag:yaml.org,2002:str":
+        return node.value
+    return None
+
+
+def _hash_span(text: str, node: Node | None, offset: int) -> tuple[int, int] | None:
+    if not isinstance(node, ScalarNode):
+        return None
+    start, end = offset + node.start_mark.index, offset + node.end_mark.index
+    # Aliases, tags and block scalars cannot be blanked without affecting other
+    # YAML syntax or fields. Preserve those files as unverifiable.
+    token = text[start:end]
+    if node.style in ("|", ">") or token.startswith(("&", "*", "!")):
+        return None
+    return start, end
+
+
+def _digest(text: str, span: tuple[int, int]) -> str:
+    start, end = span
+    empty_hash = text[:start] + '""' + text[end:]
+    return "sha256:" + hashlib.sha256(_normalize(empty_hash).encode("utf-8")).hexdigest()
+
+
+def render_skill() -> str:
+    """Render the sole canonical skill using the exact version the CLI reports."""
+    text = _normalize(_SKILL_TEMPLATE.replace("{managed_version}", json.dumps(__version__)))
+    fields, offset = _front_matter(text)
+    span = _hash_span(text, fields[HASH_FIELD], offset)
+    assert span is not None
+    start, end = span
+    return text[:start] + json.dumps(_digest(text, span)) + text[end:]
+
+
+# Keep the existing import available without maintaining a second text source.
+SKILL_MD = render_skill()
+
+
+def _version(value: str | None) -> Version | None:
+    if value is None:
+        return None
+    try:
+        return Version(value)
+    except InvalidVersion:
+        return None
+
+
+def _inspect(content: bytes | None) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "installed": content is not None,
+        "managed": False,
+        "cli_version": __version__,
+        "installed_version": None,
+        "version_state": "not_applicable",
+        "version_relation": "not_applicable",
+        "integrity": "not_applicable",
+        "force_install_command": None,
     }
+    if content is None:
+        return state
+    text = _normalize(content.decode("utf-8"))
+    fields, offset = _front_matter(text)
+    owner = fields.get("managed-by")
+    legacy = MANAGED_MARKER in text
+    state["managed"] = _string(owner) == DISTRIBUTION_NAME if owner is not None else legacy
+    if not state["managed"]:
+        return state
+    version_text = _string(fields.get("managed-version"))
+    installed = _version(version_text)
+    if "managed-version" not in fields:
+        state["version_state"] = "legacy" if legacy else "missing"
+        if legacy:
+            version_text, installed = "0", Version("0")
+    else:
+        state["version_state"] = "valid" if installed is not None else "malformed"
+    current = _version(__version__)
+    state["installed_version"] = version_text if installed is not None else None
+    state["version_relation"] = "unknown"
+    if installed is not None and current is not None:
+        state["version_relation"] = "older" if installed < current else "newer" if installed > current else "equal"
+
+    hash_node = fields.get(HASH_FIELD)
+    stored_hash = _string(hash_node)
+    span = _hash_span(text, hash_node, offset)
+    if state["version_state"] == "legacy":
+        state["integrity"] = "legacy"
+    elif hash_node is None:
+        state["integrity"] = "missing"
+    elif stored_hash is None or re.fullmatch(r"sha256:[0-9a-f]{64}", stored_hash) is None or span is None:
+        state["integrity"] = "malformed"
+    else:
+        state["integrity"] = "valid" if _digest(text, span) == stored_hash else "altered"
+    if state["version_state"] == "valid" and state["integrity"] != "valid":
+        state["force_install_command"] = FORCE_INSTALL_COMMAND
+    return state
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+
+
+def _read_skill(path: Path) -> bytes | None:
+    if _is_link(path.parent) or _is_link(path):
+        raise AppError("invalid_request", f"refusing to manage linked skill path '{path}'.")
+    if path.parent.exists() and not path.parent.is_dir():
+        raise AppError("invalid_request", f"skill directory '{path.parent}' is not a directory.")
+    if path.exists() and not path.is_file():
+        raise AppError("invalid_request", f"skill path '{path}' is not a regular file.")
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _atomic_write(path: Path, content: str, expected: bytes | None) -> bool:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=".SKILL-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content.encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Abort on any intervening edit, including another process installing a
+        # newer version. No lock or wait is needed for best-effort maintenance.
+        if _read_skill(path) != expected:
+            return False
+        os.replace(temporary, path)
+        return True
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _sync_skip_reason(state: dict[str, Any]) -> str | None:
+    if not state["installed"]:
+        return "not_installed"
+    if not state["managed"]:
+        return "unmanaged"
+    if _version(__version__) is None:
+        return "invalid_cli_version"
+    # Missing or malformed versions deliberately recover without a hash check.
+    if state["version_state"] in ("missing", "malformed", "legacy"):
+        return None
+    if state["version_relation"] in ("equal", "newer"):
+        return state["version_relation"]
+    if state["integrity"] != "valid":
+        return "altered_or_unverifiable"
+    return None
+
+
+def skill_status(skills_dir: Path | None = None) -> dict[str, Any]:
+    path = skill_dir(skills_dir) / "SKILL.md"
+    state = _inspect(_read_skill(path))
+    local = is_local_development()
+    standard = path.absolute() == (skill_dir() / "SKILL.md").absolute()
+    reason = "local_development" if local else "custom_directory" if not standard else _sync_skip_reason(state)
+    return {
+        "skill": SKILL_NAME,
+        "path": str(path),
+        "location": "standard" if standard else "custom",
+        **state,
+        "local_development": local,
+        "automatic_sync_eligible": reason is None,
+        "automatic_sync_skip_reason": reason,
+    }
+
+
+def sync_skill() -> None:
+    """Best-effort local maintenance. Never install a missing skill."""
+    try:
+        # Check before resolving or reading the user's skill directory.
+        if is_local_development() or _version(__version__) is None:
+            return
+        path = skill_dir() / "SKILL.md"
+        previous = _read_skill(path)
+        state = _inspect(previous)
+        reason = _sync_skip_reason(state)
+        if reason == "altered_or_unverifiable":
+            print(f"imap skill at '{path}' is altered or unverifiable. To replace it, run: {FORCE_INSTALL_COMMAND}", file=sys.stderr)
+        elif reason is None and _atomic_write(path, render_skill(), previous):
+            old = state["installed_version"] or state["version_state"]
+            print(f"Updated imap skill from {old} to {__version__} at '{path}'.", file=sys.stderr)
+    except Exception:
+        # Do not expose installed content through parser or decoding exceptions.
+        print("Warning: imap skill synchronization failed. The command will continue.", file=sys.stderr)
+
+
+def install_skill(skills_dir: Path | None = None, *, force: bool = False) -> dict[str, Any]:
+    target = skill_dir(skills_dir)
+    path = target / "SKILL.md"
+    previous = _read_skill(path)
+    state = _inspect(previous)
+    result = {"installed": True, "updated": False, "skill": SKILL_NAME, "path": str(path)}
+    if previous is not None:
+        if not state["managed"]:
+            raise AppError("invalid_request", f"refusing to overwrite unmanaged skill '{path}', even with --force.")
+        if state["version_relation"] == "newer":
+            return {**result, "reason": "newer_version"}
+        if state["version_state"] == "valid" and state["integrity"] != "valid" and not force:
+            raise AppError("invalid_request", f"skill '{path}' is altered or unverifiable. To replace it, run: {FORCE_INSTALL_COMMAND}")
+        if state["version_relation"] == "equal" and not force:
+            return result
+    elif target.exists() and any(target.iterdir()):
+        raise AppError("invalid_request", f"refusing to install in nonempty directory '{target}' without SKILL.md.")
+    content = render_skill()
+    if previous == content.encode("utf-8"):
+        return result
+    target.mkdir(parents=True, exist_ok=True)
+    if not _atomic_write(path, content, previous):
+        raise AppError("invalid_request", f"skill '{path}' changed during installation. Retry the command.")
+    return {**result, "updated": True}
 
 
 def remove_skill(skills_dir: Path | None = None, *, force: bool = False) -> dict[str, Any]:
     target = skill_dir(skills_dir)
-    skill_path = target / "SKILL.md"
+    path = target / "SKILL.md"
+    content = _read_skill(path)
     if not target.exists():
         return {"removed": False, "skill": SKILL_NAME, "path": str(target), "reason": "not_installed"}
-    if not skill_path.exists():
+    if content is None:
         raise AppError("invalid_request", f"refusing to remove '{target}' because SKILL.md is missing.")
-    content = skill_path.read_text(encoding="utf-8")
-    if MANAGED_MARKER not in content and not force:
-        raise AppError(
-            "invalid_request",
-            f"refusing to remove '{target}' because it is not marked as managed by imap-agent-cli; use --force to override.",
-        )
-    shutil.rmtree(target)
+    if not force and not _inspect(content)["managed"]:
+        raise AppError("invalid_request", f"refusing to remove '{target}' because it is not managed by imap-agent-cli. Use --force to override.")
+    if _read_skill(path) != content:
+        raise AppError("invalid_request", f"skill '{path}' changed during removal. Retry the command.")
+    path.unlink()
+    # Only SKILL.md belongs to this tool. Keep unrelated files and directories.
+    try:
+        target.rmdir()
+    except OSError:
+        pass
     return {"removed": True, "skill": SKILL_NAME, "path": str(target)}
