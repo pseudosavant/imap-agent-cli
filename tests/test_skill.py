@@ -47,6 +47,17 @@ class SkillTests(unittest.TestCase):
         self.assertNotIn("UV_LINK_MODE", SKILL_MD)
         self.assertNotIn("C:\\tmp", SKILL_MD)
 
+    def test_installed_skill_requires_requested_search_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install_skill(Path(tmp))
+            content = (Path(tmp) / "imap" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Use `INBOX` when the user does not specify a folder or broader scope.", content)
+        self.assertIn("Do not automatically expand to other folders when results are empty or incomplete.", content)
+        self.assertIn('search --folder "Archive/Support"', content)
+        self.assertIn("Add `--recursive` only when the user requests", content)
+        self.assertIn("Use `--all-folders` only when the user requests", content)
+        self.assertIn('JSON input with `scope: "recursive"` or `scope: "all"`', content)
+
     def test_remove_skill_removes_only_managed_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

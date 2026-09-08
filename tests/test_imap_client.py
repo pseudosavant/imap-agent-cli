@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from tests import _bootstrap  # noqa: F401
 
@@ -84,6 +85,13 @@ class ImapClientTests(unittest.TestCase):
     def test_recursive_scope_uses_delimiter(self) -> None:
         session = self._session()
         self.assertEqual(session._folder_names_for_scope("Projects", "recursive"), ["Projects", "Projects/Child"])
+
+    def test_single_folder_scope_does_not_enumerate_folders(self) -> None:
+        session = self._session()
+        with patch.object(session, "folders") as folders:
+            for folder in ("INBOX", "Archive/Support"):
+                self.assertEqual(session._folder_names_for_scope(folder, "folder"), [folder])
+            folders.assert_not_called()
 
     def test_all_scope_excludes_junk_by_name(self) -> None:
         session = self._session()

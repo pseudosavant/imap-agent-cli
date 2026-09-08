@@ -158,7 +158,7 @@ Both `required` and `preferred` refuse to send credentials over plaintext.
 
 ### Find messages
 
-Search defaults to `INBOX`, returns metadata only, and limits results to a bounded number:
+Search defaults to `INBOX` only, returns metadata only, and limits results to a bounded number. You can override the default folder with `defaults.default_folder` in config. Pass `--folder INBOX` to explicitly select the inbox:
 
 ```text
 uvx imap-agent-cli search --subject "invoice" --max-results 10
@@ -166,14 +166,15 @@ uvx imap-agent-cli search --from "person@example.com" --since 2026-01-01 --max-r
 uvx imap-agent-cli search --to "me@example.com" --has-attachments --max-results 10 --max-scan 100
 ```
 
-Search a folder and its children, or search all selectable folders:
+When requested, search a specific folder, include its children, or search all selectable folders:
 
 ```text
+uvx imap-agent-cli search --folder "Archive/Support" --subject "contract" --max-results 25
 uvx imap-agent-cli search --folder Projects --recursive --subject "contract" --max-results 25
 uvx imap-agent-cli search --all-folders --subject "contract" --max-results 25
 ```
 
-All-folder searches exclude folders marked as Junk or Spam by default. Use broad mailbox searches sparingly because large mailboxes can be slow.
+All-folder searches exclude folders marked as Junk or Spam by default. All-folder and recursive searches can be expensive on large nested archives even with a small result limit. The installed skill directs agents to use the inbox unless the user requests another scope. Empty or incomplete results do not authorize automatically expanding the search.
 
 ### Read a selected message
 

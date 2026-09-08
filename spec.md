@@ -414,12 +414,14 @@ Folder scope values:
 
 Default search behavior:
 
-1. default folder is `INBOX`
+1. default folder is `INBOX`, overridable with `defaults.default_folder` in config
 2. default scope is `folder`
 3. max results default to `25`
 4. results sort newest first where practical
 5. all-folder search excludes folders with special-use `junk` or `spam`
 6. all-folder search may include Trash, Archive, Sent, and Drafts
+
+The installed skill must direct agents to search `INBOX` when the user does not specify a folder or broader scope. A requested folder uses `--folder`, requested child folders use `--recursive`, and a requested entire mailbox uses `--all-folders`. These rules also apply to JSON scope. Agents must not automatically widen an empty or incomplete search. They should report the scope searched and offer a broader search if useful.
 
 Example search output:
 

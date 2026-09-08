@@ -95,7 +95,9 @@ Return only relevant folder names/counts to the user unless they ask for the ful
 
 ## Search
 
-Search defaults to `INBOX` when no folder is provided:
+Use `INBOX` when the user does not specify a folder or broader scope. General requests such as "find an email" or "search my email" mean inbox-only search. The CLI defaults to `INBOX` unless `defaults.default_folder` is configured differently. Pass `--folder INBOX` to make the inbox scope explicit.
+
+Search only the requested scope. Do not automatically expand to other folders when results are empty or incomplete. Report the scope searched and offer a broader search if useful.
 
 ```text
 uvx imap-agent-cli search --folder INBOX --max-results 10
@@ -117,13 +119,19 @@ uvx imap-agent-cli search --folder INBOX --unseen --max-results 10
 uvx imap-agent-cli search --folder INBOX --larger 10000 --smaller 500000 --max-results 10
 ```
 
-For child folders:
+For a specific folder requested by the user, use its exact name:
+
+```text
+uvx imap-agent-cli search --folder "Archive/Support" --subject "contract" --max-results 10
+```
+
+Add `--recursive` only when the user requests the folder and its child folders:
 
 ```text
 uvx imap-agent-cli search --folder Projects --recursive --max-results 25
 ```
 
-For all folders, use sparingly because large mailboxes can be slow:
+Use `--all-folders` only when the user requests searching all folders or the entire mailbox. All-folder and recursive searches can be expensive on large nested archives even with a small result limit. The same scope rules apply to JSON input with `scope: "recursive"` or `scope: "all"`.
 
 ```text
 uvx imap-agent-cli search --all-folders --subject "contract" --max-results 25

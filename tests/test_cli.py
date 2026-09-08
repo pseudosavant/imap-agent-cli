@@ -56,6 +56,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parsed.command, "search")
         self.assertEqual(parsed.subject, "invoice")
 
+    def test_search_scope_defaults_and_explicit_overrides(self) -> None:
+        cases = [
+            ([], None, Defaults(), "INBOX", "folder"),
+            ([], {"subject": "invoice"}, Defaults(), "INBOX", "folder"),
+            (["--folder", "Archive/Support"], None, Defaults(), "Archive/Support", "folder"),
+            (["--folder", "Projects", "--recursive"], None, Defaults(), "Projects", "recursive"),
+            (["--all-folders"], None, Defaults(), "INBOX", "all"),
+            ([], {"folder": "Archive/Support"}, Defaults(), "Archive/Support", "folder"),
+            ([], {"folder": "Projects", "scope": "recursive"}, Defaults(), "Projects", "recursive"),
+            ([], {"scope": "all"}, Defaults(), "INBOX", "all"),
+            ([], None, Defaults(default_folder="Projects"), "Projects", "folder"),
+            (["--folder", "INBOX"], None, Defaults(default_folder="Projects"), "INBOX", "folder"),
+        ]
+        for flags, payload, defaults, folder, scope in cases:
+            with self.subTest(flags=flags, payload=payload, default_folder=defaults.default_folder):
+                stdout = StringIO()
+                with (
+                    patch("imap_agent_cli.cli.load_config", return_value=Config(defaults=defaults)),
+                    patch("imap_agent_cli.cli._session") as session_factory,
+                    patch("sys.stdout", stdout),
+                    patch("sys.stdin", StringIO(json.dumps(payload))),
+                ):
+                    session = session_factory.return_value.__enter__.return_value
+                    session.search.return_value = {"results": []}
+                    args = ["search", *flags]
+                    if payload is not None:
+                        args.extend(["--json", "-"])
+                    code = main(args)
+                self.assertEqual(code, 0)
+                session.search.assert_called_once()
+                self.assertEqual(session.search.call_args.kwargs["folder"], folder)
+                self.assertEqual(session.search.call_args.kwargs["scope"], scope)
+                self.assertEqual(json.loads(stdout.getvalue()), {"results": []})
+
     def test_no_args_prints_agent_quick_reference(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
