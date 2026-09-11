@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import add_profile, config_status, init_config, load_config, remove_profile, resolve_profile, set_default_profile
+from .config import config_path, add_profile, config_status, init_config, load_config, remove_profile, resolve_profile, set_default_profile
 from .errors import AppError, ConfigError
 from .imap_client import ImapSession
 from .mime import create_draft_message, header_value, parse_message
 from .render import write_error, write_json
 from .skill import install_skill, remove_skill, skill_status, sync_skill
+from .storage import paths
+from .credentials import credentials_path
+from .onboarding import setup, inspect_skill, write_report
+from .verification import verify_profile
 
 
 PROJECT_URL = "https://github.com/pseudosavant/imap-agent-cli"
@@ -25,13 +29,13 @@ Safety:
   Cannot: send, delete, move, archive, label, flag, mark read/unread
 
 Setup:
-  Required env vars for the default profile:
-    IMAP_AGENT_CLI_HOST
-    IMAP_AGENT_CLI_PORT
-    IMAP_AGENT_CLI_USERNAME
-    IMAP_AGENT_CLI_PASSWORD
-    IMAP_AGENT_CLI_TLS
-    IMAP_AGENT_CLI_SSL_MODE
+  uvx imap-agent-cli setup
+  uvx imap-agent-cli setup "me@gmail.com"
+  Passwords and app passwords only. Microsoft 365 and Outlook.com need OAuth and are unsupported.
+  Optional environment overrides: IMAP_AGENT_CLI_HOST, IMAP_AGENT_CLI_USERNAME,
+  IMAP_AGENT_CLI_PASSWORD, IMAP_AGENT_CLI_PORT, IMAP_AGENT_CLI_TLS, IMAP_AGENT_CLI_SSL_MODE.
+  Secure defaults: port 993, TLS enabled, ssl_mode required.
+  Run config check for read-only diagnostics and exact recovery steps.
 
 Common workflows:
   imap-agent-cli folders
@@ -50,6 +54,7 @@ Output:
   stderr is diagnostics/errors only
 
 Commands:
+  setup           verify and save an account and install the managed skill
   config          initialize and manage profile configuration
   profiles        list configured profile names
   skill           install, inspect status, or remove the imap agent skill
@@ -197,55 +202,23 @@ def cmd_config(args: argparse.Namespace) -> int:
         write_json({"created": True, "path": str(path)})
         return 0
     if args.config_command == "check":
-        checks: list[dict[str, Any]] = []
-        report: dict[str, Any] = {"ok": False, "checks": checks}
+        report = {"ok": False, "checks": [], "verification": "not_checked"}
+        report["config_path"] = str(config_path())
+        report["skill"] = inspect_skill(args.skills_dir)
         try:
             config = load_config()
-            checks.append(_check_item("config_loaded", True, path=str(config.path)))
             profile = resolve_profile(
-                config,
-                getattr(args, "profile", None),
-                host=getattr(args, "host", None),
-                port=getattr(args, "port", None),
-                username=getattr(args, "username", None),
-                password=_read_password(args),
-                tls=getattr(args, "tls", None),
-                ssl_mode=getattr(args, "ssl_mode", None),
+                config, args.profile, host=args.host, port=args.port, username=args.username,
+                password=_read_password(args), tls=args.tls, ssl_mode=args.ssl_mode,
             )
-            report["profile"] = {
-                "name": profile.name,
-                "host": profile.host,
-                "port": profile.port,
-                "username": profile.username,
-                "password_env": profile.password_env,
-                "has_password": bool(profile.password),
-                "tls": profile.tls,
-                "ssl_mode": profile.ssl_mode,
-            }
-            checks.append(_check_item("profile_resolved", True))
-            checks.append(_check_item("password_available", bool(profile.password), password_env=profile.password_env))
-            with ImapSession(profile, config.defaults) as session:
-                checks.append(_check_item("login", True, security=session.security))
-                capabilities = session.capabilities()
-                checks.append(_check_item("capabilities", True, values=capabilities))
-                folders = session.folders()["folders"]
-                checks.append(_check_item("folders", True, count=len(folders)))
-                default_folder = config.defaults.default_folder
-                selectable = {str(folder["name"]) for folder in folders if folder.get("selectable")}
-                default_ok = default_folder in selectable
-                checks.append(_check_item("default_folder", default_ok, folder=default_folder))
-                if default_ok:
-                    session._select(default_folder, readonly=True)
-                try:
-                    drafts_folder = session.resolve_drafts_folder()
-                    checks.append(_check_item("drafts_folder", True, folder=drafts_folder))
-                except AppError as exc:
-                    checks.append(_check_item("drafts_folder", False, error=exc.message))
+            report.update(verify_profile(profile, config.defaults, local=args.local, session_factory=ImapSession))
+            report["checks"].insert(0, _check_item("config_loaded", True, path=str(config.path)))
+            report["credentials_path"] = str(credentials_path(config.path or config_path(), profile))
         except AppError as exc:
-            checks.append(_check_item(exc.code, False, error=exc.message))
-        report["ok"] = all(item["ok"] for item in checks)
-        write_json(report)
-        return 0 if report["ok"] else 1
+            report["checks"].append(_check_item(exc.code, False, error=exc.message))
+        if not report["skill"].get("installed"):
+            report["next_steps"] = ["The managed skill is missing or unreadable. Run uvx imap-agent-cli skill install with the same skills directory."]
+        return write_report(report, args.format)
     if args.config_command == "show":
         write_json(config_status(load_config()))
         return 0
@@ -442,7 +415,7 @@ def cmd_draft_create(args: argparse.Namespace) -> int:
     attachments = [Path(path) for path in (args.attachment or payload.get("attachments") or [])]
     with _session(args) as session:
         message = create_draft_message(
-            sender=session.profile.username,
+            sender=session.profile.sender or session.profile.username,
             to=to,
             cc=_parse_repeated_addresses(args.cc) or _string_list(payload.get("cc")),
             bcc=_parse_repeated_addresses(args.bcc) or _string_list(payload.get("bcc")),
@@ -486,7 +459,7 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
         source_refs = header_value(source_message, "references").strip()
         references = f"{source_refs} {source_message_id}".strip()
         message = create_draft_message(
-            sender=session.profile.username,
+            sender=session.profile.sender or session.profile.username,
             to=to,
             cc=_parse_repeated_addresses(args.cc) or _string_list(payload.get("cc")),
             bcc=_parse_repeated_addresses(args.bcc) or _string_list(payload.get("bcc")),
@@ -510,6 +483,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--about", action="store_true", help="show project and license information and exit")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    setup_parser = sub.add_parser("setup", help="verify and save an account, then install the managed skill",
+        description="Set up password or app-password IMAP access. Microsoft 365 and Outlook.com require OAuth and are unsupported. Never enter credentials in agent chat.")
+    setup_parser.add_argument("target", nargs="?", help="email address, IMAP hostname, imaps:// endpoint, or supported webmail URL")
+    _common_profile_args(setup_parser)
+    setup_parser.add_argument("--password-env", help="name of a password environment variable")
+    setup_parser.add_argument("--replace-password", action="store_true", help="verify and save a replacement credential. Unset password environment overrides first")
+    setup_parser.add_argument("--non-interactive", action="store_true", help="never prompt. Fail if required settings or credentials are missing")
+    setup_parser.add_argument("--no-skill", action="store_true", help="skip managed skill installation")
+    setup_parser.add_argument("--skills-dir", help="custom skills root")
+    setup_parser.add_argument("--set-default", action="store_true", help="make this profile the default")
+    setup_parser.add_argument("--default-folder", help="default search folder (initial default: INBOX)")
+    setup_parser.add_argument("--drafts-folder", help="existing Drafts folder. Otherwise detected without creating a draft")
+    setup_parser.add_argument("--sender", help="email address used for drafts if different from the login username")
+    setup_parser.add_argument("--format", choices=["json", "plain"], default="json")
+    setup_parser.set_defaults(func=setup)
+
     config = sub.add_parser("config", help="initialize and manage profile configuration")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_init = config_sub.add_parser("init", help="create a starter config file")
@@ -517,6 +506,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_init.set_defaults(func=cmd_config)
     config_check = config_sub.add_parser("check", help="validate profile configuration and IMAP connectivity")
     _common_profile_args(config_check)
+    config_check.add_argument("--local", action="store_true", help="check local readiness without connecting")
+    config_check.add_argument("--format", choices=["json", "plain"], default="json")
+    config_check.add_argument("--skills-dir", help="inspect a custom skills root without changing it")
     config_check.set_defaults(func=cmd_config)
     config_show = config_sub.add_parser("show", help="show resolved config metadata without secrets")
     config_show.set_defaults(func=cmd_config)
@@ -652,16 +644,30 @@ def build_parser() -> argparse.ArgumentParser:
     reply.add_argument("--drafts-folder")
     reply.set_defaults(func=cmd_draft_reply)
 
+    def add_path_options(current):
+        current.add_argument("--config", default=argparse.SUPPRESS, help="configuration file (or IMAP_AGENT_CLI_CONFIG)")
+        current.add_argument("--credentials-file", default=argparse.SUPPRESS, help="separate credentials file (or IMAP_AGENT_CLI_CREDENTIALS_FILE)")
+        for action in current._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    add_path_options(child)
+    add_path_options(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    # Global options take no values. Recognize the command before argparse can
-    # exit for help or version, including help for skill-management commands.
-    command = next((arg for arg in argv if not arg.startswith("-")), None)
-    if command not in {"skill", "install-skill", "remove-skill"}:
+    # Skip global path values when identifying read-only command help.
+    command = None
+    arguments = iter(argv)
+    for arg in arguments:
+        if arg in {"--config", "--credentials-file"}:
+            next(arguments, None)
+        elif not arg.startswith("-"):
+            command = arg
+            break
+    if not argv or argv in (["--help"], ["-h"], ["--version"], ["--about"]):
         sync_skill()
     if not argv or argv in (["--help"], ["-h"]):
         sys.stdout.write(TOP_LEVEL_HELP)
@@ -673,15 +679,25 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(f"{__version__}\n")
         return 0
     parser = build_parser()
+    if any(flag in argv for flag in ("--help", "-h")) and command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
+        sync_skill()
     args = parser.parse_args(argv)
     try:
-        return int(args.func(args))
+        if getattr(args, "password_stdin", False) and getattr(args, "json_input", None) == "-":
+            raise AppError("invalid_request", "Password input and JSON input cannot both use stdin. Use --json PATH for the request or a password environment variable.")
+        with paths(getattr(args, "config", None), getattr(args, "credentials_file", None)):
+            if args.command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
+                sync_skill()
+            return int(args.func(args))
     except AppError as exc:
         write_error(exc)
         return exc.exit_code
     except ConfigError as exc:
         write_error(exc)
         return exc.exit_code
+    except OSError:
+        write_error(AppError("config_invalid", "Cannot access a required local file. Check file paths and permissions. Run uvx imap-agent-cli config check."))
+        return 1
     except KeyboardInterrupt:
         write_error(AppError("interrupted", "interrupted by user", exit_code=130))
         return 130

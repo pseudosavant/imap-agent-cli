@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import imaplib
+import socket
 import ssl
 from contextlib import AbstractContextManager
 from datetime import datetime
@@ -36,65 +38,68 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         self.security: dict[str, Any] = {}
 
     def __enter__(self) -> "ImapSession":
+        from .providers import reject_microsoft
+        from .config import validate_profile
+        validate_profile(self.profile)
+        reject_microsoft(self.profile.host)
         try:
             from imapclient import IMAPClient
-        except ImportError as exc:
-            raise AppError(
-                "config_invalid",
-                "IMAPClient is not installed. Run with 'uv run' or install imap-agent-cli with dependencies.",
-            ) from exc
+            from imapclient.imapclient import SocketTimeout
+        except ImportError:
+            raise AppError("config_invalid", "IMAPClient is not installed. Run uvx imap-agent-cli or install this package with its dependencies.") from None
         if not self.profile.password:
-            raise AppError("auth_failed", f"missing password for profile '{self.profile.name}'.")
-        ssl_mode = self.profile.ssl_mode.lower()
-        if ssl_mode not in {"required", "preferred", "disabled"}:
-            raise AppError("config_invalid", "ssl_mode must be required, preferred, or disabled.")
-
-        def connect(*, implicit_tls: bool) -> Any:
-            return IMAPClient(
-                self.profile.host,
-                port=self.profile.port,
-                ssl=implicit_tls,
-                ssl_context=ssl.create_default_context() if implicit_tls else None,
-                timeout=self.profile.connect_timeout_seconds,
-            )
-
-        def login(server: Any, *, encrypted: bool, method: str) -> None:
-            if not encrypted and ssl_mode != "disabled":
-                raise AppError(
-                    "connection_failed",
-                    "refusing to send credentials without TLS; set ssl_mode=disabled to allow plaintext IMAP.",
-                )
-            server.login(self.profile.username, self.profile.password)
-            self.server = server
-            self.security = {
-                "ssl_mode": ssl_mode,
-                "encrypted": encrypted,
-                "method": method,
-            }
-
+            raise AppError("auth_failed", "No credential is available. Run uvx imap-agent-cli setup in your terminal for this profile.")
+        ssl_mode = self.profile.ssl_mode
+        encrypted = False
+        method = "plain"
         try:
-            if ssl_mode == "disabled":
-                server = connect(implicit_tls=False)
-                login(server, encrypted=False, method="plain")
-            elif self.profile.tls:
-                try:
-                    server = connect(implicit_tls=True)
-                    login(server, encrypted=True, method="implicit_tls")
-                except Exception:
-                    if ssl_mode != "preferred":
-                        raise
-                    server = connect(implicit_tls=False)
-                    server.starttls(ssl.create_default_context())
-                    login(server, encrypted=True, method="starttls")
-            else:
-                server = connect(implicit_tls=False)
-                server.starttls(ssl.create_default_context())
-                login(server, encrypted=True, method="starttls")
+            implicit = self.profile.tls and ssl_mode != "disabled"
+            try:
+                self.server = IMAPClient(
+                    self.profile.host, port=self.profile.port, ssl=implicit,
+                    ssl_context=ssl.create_default_context() if implicit else None,
+                    timeout=SocketTimeout(connect=self.profile.connect_timeout_seconds, read=self.profile.read_timeout_seconds),
+                )
+            except ssl.SSLCertVerificationError:
+                raise
+            except (OSError, imaplib.IMAP4.error):
+                if ssl_mode != "preferred" or not implicit:
+                    raise
+                self.server = IMAPClient(
+                    self.profile.host, port=self.profile.port, ssl=False,
+                    timeout=SocketTimeout(connect=self.profile.connect_timeout_seconds, read=self.profile.read_timeout_seconds),
+                )
+                implicit = False
+            if ssl_mode != "disabled":
+                if not implicit:
+                    self.server.starttls(ssl.create_default_context())
+                encrypted = True
+                method = "implicit_tls" if implicit else "starttls"
         except Exception as exc:
             self._logout_quiet()
-            if isinstance(exc, AppError):
-                raise exc
-            raise AppError("connection_failed", f"failed to connect or authenticate: {exc}") from exc
+            if isinstance(exc, ssl.SSLCertVerificationError):
+                raise AppError("tls_failed", "The server certificate could not be verified. Check the hostname and trusted certificates, then run uvx imap-agent-cli config check.") from None
+            if isinstance(exc, (TimeoutError, socket.timeout)):
+                raise AppError("connection_timeout", "The IMAP connection timed out. Check network access from this execution environment, then run uvx imap-agent-cli config check.", retryable=True) from None
+            raise AppError("connection_failed", "Could not establish the configured IMAP connection. Check the host, port, TLS settings, and network access. Run uvx imap-agent-cli setup to correct this profile.") from None
+        # Do not retry authentication via another transport or credential source.
+        try:
+            self.server.login(self.profile.username, self.profile.password)
+        except imaplib.IMAP4.abort:
+            self._logout_quiet()
+            raise AppError("connection_failed", "The connection closed during sign-in. Check network access and run uvx imap-agent-cli config check.", retryable=True) from None
+        except imaplib.IMAP4.error:
+            self._logout_quiet()
+            if self.profile.credential_source.startswith("environment:"):
+                recovery = "Update " + self.profile.credential_source.partition(":")[2] + " in this execution environment, then rerun uvx imap-agent-cli config check."
+            else:
+                selector = " --profile " + self.profile.name if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.profile.name) else ""
+                recovery = f"Run uvx imap-agent-cli setup{selector} --replace-password in your terminal."
+            raise AppError("auth_failed", "The server rejected the credential. Check the login name and provider app-password requirements. " + recovery) from None
+        except Exception:
+            self._logout_quiet()
+            raise AppError("connection_failed", "The connection failed during sign-in. Check network access and run uvx imap-agent-cli config check.", retryable=True) from None
+        self.security = {"ssl_mode": ssl_mode, "encrypted": encrypted, "method": method}
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -110,20 +115,17 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         finally:
             self.server = None
 
-    def _select(self, folder: str, *, readonly: bool = True) -> None:
-        # SELECT does not mutate message state; no-seen behavior is enforced by
-        # BODY.PEEK[] fetches. Some servers, including pymap on Windows, hang on
-        # the IMAPClient EXAMINE/read-only path.
+    def _select(self, folder: str, *, readonly: bool = True) -> dict:
         try:
-            self.server.select_folder(folder, readonly=False)
-        except Exception as exc:
-            raise AppError("folder_not_found", f"folder '{folder}' could not be selected: {exc}") from exc
+            return self.server.select_folder(folder, readonly=readonly)
+        except Exception:
+            raise AppError("folder_not_found", "The requested folder could not be opened read-only. Check its name and access. Run uvx imap-agent-cli setup --default-folder INBOX to use the inbox. No read-write fallback was attempted.") from None
 
     def capabilities(self) -> list[str]:
         try:
             values = self.server.capabilities()
         except Exception:
-            return []
+            raise AppError("server_error", "Could not inspect IMAP capabilities. Retry uvx imap-agent-cli config check.") from None
         return sorted(_text(value).upper() for value in values)
 
     def folders(self) -> dict[str, Any]:

@@ -26,7 +26,7 @@ HASH_FIELD = "managed-content-sha256"
 
 _SKILL_TEMPLATE = """---
 name: imap
-description: Use when the user asks an agentic tool to search, read, summarize, inspect, or draft email using imap-agent-cli. Covers safe IMAP-only email access, folder enumeration, attachment download, and draft creation; must not send, delete, move, archive, flag, label, or mark messages read/unread.
+description: Use when the user asks an agentic tool to search, read, summarize, inspect, or draft email using imap-agent-cli. Covers safe IMAP-only email access, folder enumeration, attachment download, and draft creation. Must not send, delete, move, archive, flag, label, or mark messages read/unread.
 metadata:
   managed-by: imap-agent-cli
   managed-version: {managed_version}
@@ -63,25 +63,28 @@ If working inside the `imap-agent-cli` repository, this local form is also valid
 uv run ./imap_agent_cli.py <command>
 ```
 
-The CLI uses these environment variables for the default profile:
+## Setup and Credentials
 
-```text
-IMAP_AGENT_CLI_HOST
-IMAP_AGENT_CLI_PORT
-IMAP_AGENT_CLI_USERNAME
-IMAP_AGENT_CLI_PASSWORD
-IMAP_AGENT_CLI_TLS
-IMAP_AGENT_CLI_SSL_MODE
-IMAP_AGENT_CLI_DRAFTS_FOLDER
-```
+The user completes `uvx imap-agent-cli setup` in their own terminal. Setup verifies read-only access, saves account settings and credentials separately, and installs this skill. It supports passwords and app passwords. Microsoft 365 and Outlook.com require OAuth and are unsupported.
+
+Never request credentials in agent chat. Never open or print the credentials file, environment secret values, or token material. Never put a credential in command arguments. Use the CLI to resolve credentials internally.
+
+Saved credentials work only where the CLI can access them. A sandbox, remote host, or container needs its own runtime, allowed file access, and IMAP network access. Do not automatically copy secrets between hosts. Environment overrides affect only processes that inherit them. Setup does not persist shell environment variables.
+
+Use `--profile NAME` when the user selects an account. Preserve the selected profile on subsequent operations. Settings can use `--config PATH` and `--credentials-file PATH` or their path environment variables. Preserve explicitly selected paths on subsequent commands. Do not change these paths to bypass an access restriction.
 
 ## Configuration Check
 
-Use this first when setup may be wrong. It validates config, login, folders, default folder, and Drafts detection without reading message bodies:
+When setup may be wrong, use:
 
 ```text
 uvx imap-agent-cli config check
+uvx imap-agent-cli config check --local
 ```
+
+The default check verifies login, read-only mailbox access, and bounded metadata access. It does not read bodies or append a draft. It does not modify configuration, credentials, or the managed skill. The local check does not connect. Finding Drafts does not prove append permission. Missing Drafts does not prevent reading.
+
+Report the relevant diagnostic and next command. Ask the user to run interactive setup in their terminal when credentials are missing or rejected. Never run interactive credential collection inside the agent. Non-interactive setup must use `--non-interactive` and already-provisioned credentials. It must not prompt.
 
 ## Folder Listing
 

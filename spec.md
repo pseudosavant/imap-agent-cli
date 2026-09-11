@@ -96,7 +96,7 @@ imap-agent-cli/
 
 1. Publishable Python package via `pyproject.toml`.
 2. Console script entry point exposed as `imap-agent-cli`.
-3. Python `>=3.11`.
+3. Python `>=3.11,<3.14`. IMAPClient currently fails under Python 3.14.
 4. Root-level `imap_agent_cli.py` wrapper with PEP 723 metadata for local script execution.
 5. The wrapper delegates into the packaged implementation instead of duplicating application logic.
 
@@ -239,25 +239,30 @@ Notes:
 
 1. `[defaults].profile` is an alias, not duplicated connection data.
 2. Config should store non-secret fields and credential source names.
-3. Passwords should come from env vars or stdin, not plaintext config.
+3. Passwords come from environment variables, explicit stdin, or a separate credentials file. Ordinary configuration stores only credential references.
 4. `drafts_folder = ""` means auto-detect.
 
 ## Profile Resolution
 
-Resolution order:
+Select `--profile NAME`, the saved default profile, or implicit `default`. Resolve connection fields from explicit CLI flags or the setup target, non-empty environment overrides, the selected saved profile, then built-in defaults.
 
-1. explicit CLI flags such as `--host`, `--port`, `--username`, `--tls`, and `--ssl-mode`
-2. selected profile from `--profile NAME`
-3. default profile from `[defaults].profile`
-4. single-profile env vars
-5. fail with a clear configuration error
+Resolve passwords from explicit stdin, the profile's password environment variable, the global password environment variable, then a matching saved credential. A rejected credential never triggers fallback. Saved credentials are bound to the endpoint, username, transport, and authentication method. Environment and stdin credentials can bypass an unavailable credentials file.
 
-Credential resolution order:
+`--config` and `--credentials-file` select explicit file paths. Corresponding path environment variables are fallbacks. Plaintext secrets must remain separate from ordinary configuration. Use normal inherited permissions and no required OS keyring. Do not persist shell environment variables.
 
-1. `--password-stdin`
-2. selected profile's `password_env`
-3. single-profile `IMAP_AGENT_CLI_PASSWORD`
-4. fail with a clear auth error
+## First-time Setup
+
+`setup [TARGET]` completes password or app-password onboarding. TARGET can be an email address, IMAP hostname, an IMAP connection URL without credentials, or a known webmail origin. URLs are parsed locally and never fetched. Custom email domains do not justify guessing an IMAP server. Microsoft 365 and Outlook.com are unsupported because OAuth remains out of scope.
+
+Setup prompts only for missing information. Credential input uses asterisk masking with no echo fallback or history. All prompts and progress use stderr. JSON is the default result format. `--format plain` provides a readable result. `--non-interactive` never prompts. Missing input fails before saving account settings. Explicit password stdin is supported.
+
+Verification must use EXAMINE and metadata-only fetches. It checks at most 250 candidate UIDs and fetches at most one message's metadata. No message bodies or drafts are created during verification. Drafts discovery is advisory for reading. Empty mailboxes leave metadata fetching untested. Return explicit verification limits and do not claim append permission or agent skill loading was verified.
+
+Save entered credentials only after verification. Preserve working settings and credentials if replacement fails. Preserve unrelated TOML content and coordinate concurrent writers. Install the managed skill by default using existing ownership, version, integrity, and path protections. Never force an installation. Report partial completion if saving or skill installation fails.
+
+`config check` and `config check --local` are read-only for local files. They never synchronize the skill. The latter never connects. Configuration display and profile listing also skip automatic skill synchronization. Other ordinary invocations retain synchronization behavior.
+
+See [setup guidance](docs/setup.md) for provider instructions, exact recovery commands, credential lifecycle, and agent compatibility.
 
 ## Config Commands
 
@@ -327,7 +332,7 @@ The distribution and command are `imap-agent-cli`. The Python import package is 
 
 The content hash covers the entire UTF-8 file after normalizing CRLF and CR to LF and replacing only the hash field's value with `""`. Verification uses the installed text without reserializing YAML. Generated files have LF endings, a trailing newline, and no byte order mark. This detects modifications and is not a signature.
 
-Ordinary invocations, including help, version, about, and no arguments, check only an already-installed skill in the standard location. Skill-management commands skip this check. Compare versions with PEP 440. Replace pristine older managed content. Preserve equal or newer versions and unmanaged content. Preserve older content with a missing, malformed, or mismatched hash and recommend `uvx imap-agent-cli skill install --force`.
+Ordinary mailbox invocations, including their help, top-level help, version, about, and no arguments, check only an already-installed skill in the standard location. Skill-management commands skip this check. Compare versions with PEP 440. Replace pristine older managed content. Preserve equal or newer versions and unmanaged content. Preserve older content with a missing, malformed, or mismatched hash and recommend `uvx imap-agent-cli skill install --force`.
 
 The legacy HTML marker remains recognized unless front matter assigns ownership to another tool. Legacy content without a version migrates as version 0. Missing or malformed managed versions intentionally recover through replacement without integrity verification. Newly generated metadata becomes authoritative.
 

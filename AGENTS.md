@@ -25,7 +25,7 @@ The core safety boundary is strict: never add support for sending email, deletin
 - Keep the root wrapper thin; application logic belongs under `src/imap_agent_cli/`.
 - Preserve stable JSON payloads on stdout. Diagnostics, warnings, progress, and errors must go to stderr.
 - Do not print secrets, credentials, full message bodies, or attachment contents in logs.
-- Keep credentials in environment variables or config references to environment variables. Do not add config examples that store passwords directly.
+- Keep secrets separate from ordinary configuration. Credentials may come from environment variables, explicit stdin, or the separate credentials file written by setup. Never include real credentials in examples. Use normal inherited filesystem permissions. Do not require an OS keyring or persist shell environment variables.
 - Keep README and skill language platform-neutral and agent-tool-neutral. Avoid shell-specific syntax unless explicitly documenting a shell-specific example.
 - If changing installed-skill behavior or wording, update `src/imap_agent_cli/skill.py` and `tests/test_skill.py` together.
 - If changing MIME parsing, body rendering, draft creation, or search behavior, add focused tests for the contract being changed.

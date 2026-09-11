@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -36,7 +37,7 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes]) -> None:
     raise TimeoutError(f"timed out waiting for pymap on port {port}")
 
 
-def _run_cli(args: list[str], env: dict[str, str]) -> dict[str, object]:
+def _run_cli(args: list[str], env: dict[str, str], *, input_text: str | None = None, expected_code: int = 0) -> dict[str, object]:
     env = {**env, "PYTHONPATH": str(ROOT / "src")}
     result = subprocess.run(
         [sys.executable, "-m", "imap_agent_cli.cli", *args],
@@ -44,10 +45,11 @@ def _run_cli(args: list[str], env: dict[str, str]) -> dict[str, object]:
         env=env,
         text=True,
         capture_output=True,
+        input=input_text,
         timeout=30,
         check=False,
     )
-    if result.returncode != 0:
+    if result.returncode != expected_code:
         raise AssertionError(f"command failed: {args}\nstdout={result.stdout}\nstderr={result.stderr}")
     return json.loads(result.stdout)
 
@@ -58,6 +60,7 @@ class PymapIntegrationTests(unittest.TestCase):
         if not shutil.which("pymap"):
             self.skipTest("pymap executable not found")
         port = _free_port()
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -77,14 +80,37 @@ class PymapIntegrationTests(unittest.TestCase):
         try:
             _wait_for_port(port, process)
             env = {
-                **os.environ,
-                "IMAP_AGENT_CLI_HOST": "127.0.0.1",
-                "IMAP_AGENT_CLI_PORT": str(port),
-                "IMAP_AGENT_CLI_USERNAME": "demouser",
-                "IMAP_AGENT_CLI_PASSWORD": "demopass",
-                "IMAP_AGENT_CLI_TLS": "false",
-                "IMAP_AGENT_CLI_SSL_MODE": "disabled",
+                **{key: value for key, value in os.environ.items() if not key.startswith("IMAP_AGENT_CLI_")},
+                "HOME": str(home), "USERPROFILE": str(home),
+                "IMAP_AGENT_CLI_CONFIG": str(home / "config.toml"),
             }
+            from imapclient import IMAPClient
+
+            def flags():
+                with IMAPClient("127.0.0.1", port=port, ssl=False, timeout=10) as client:
+                    client.login("demouser", "demopass")
+                    client.select_folder("INBOX", readonly=True)
+                    return client.get_flags(client.search(["ALL"]))
+
+            initial_flags = flags()
+            setup = _run_cli(["setup", "--host", "127.0.0.1", "--port", str(port),
+                              "--username", "demouser", "--sender", "demo@example.com", "--no-tls",
+                              "--ssl-mode", "disabled", "--password-stdin", "--non-interactive"],
+                             env, input_text="demopass\n")
+            self.assertTrue(setup["ready"])
+            self.assertTrue(setup["credential_saved"])
+            self.assertTrue((home / ".agents" / "skills" / "imap" / "SKILL.md").exists())
+            config_path, secret_path = home / "config.toml", home / "credentials.toml"
+            original = config_path.read_bytes(), secret_path.read_bytes()
+            repeated = _run_cli(["setup", "--non-interactive"], env)
+            self.assertTrue(repeated["ready"])
+            self.assertEqual(original, (config_path.read_bytes(), secret_path.read_bytes()))
+            check = _run_cli(["config", "check"], env)
+            self.assertTrue(check["ok"])
+            failed = _run_cli(["setup", "--replace-password", "--password-stdin", "--non-interactive"],
+                              env, input_text="incorrect-dummy\n", expected_code=1)
+            self.assertFalse(failed["ready"])
+            self.assertEqual(original, (config_path.read_bytes(), secret_path.read_bytes()))
             folders = _run_cli(["folders"], env)
             folder_names = {folder["name"] for folder in folders["folders"]}  # type: ignore[index]
             self.assertIn("INBOX", folder_names)
@@ -99,6 +125,7 @@ class PymapIntegrationTests(unittest.TestCase):
             message = _run_cli(["read", "--folder", str(inbox), "--uid", str(uid), "--body-format", "plain"], env)
             self.assertEqual(message["folder"], inbox)
             self.assertEqual(message["uid"], uid)
+            self.assertEqual(flags(), initial_flags)
 
             draft = _run_cli(
                 [

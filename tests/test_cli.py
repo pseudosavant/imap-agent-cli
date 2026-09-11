@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from tests import _bootstrap  # noqa: F401
 
@@ -18,6 +18,8 @@ class FakeCheckSession:
     def __init__(self, profile: Profile, defaults: Defaults) -> None:
         self.profile = profile
         self.defaults = defaults
+        self.server = MagicMock()
+        self.server.list_folders.return_value = [([], "/", "INBOX"), ([b"\\Drafts"], "/", "Drafts")]
         self.security = {"ssl_mode": profile.ssl_mode, "encrypted": True, "method": "implicit_tls"}
 
     def __enter__(self) -> "FakeCheckSession":
@@ -37,8 +39,8 @@ class FakeCheckSession:
             ]
         }
 
-    def _select(self, folder: str, *, readonly: bool = True) -> None:
-        return None
+    def _select(self, folder: str, *, readonly: bool = True) -> dict:
+        return {b"UIDNEXT": 1}
 
     def resolve_drafts_folder(self) -> str:
         return "Drafts"
@@ -55,6 +57,17 @@ class CliTests(unittest.TestCase):
         parsed = parser.parse_args(["search", "--subject", "invoice"])
         self.assertEqual(parsed.command, "search")
         self.assertEqual(parsed.subject, "invoice")
+
+    def test_drafts_use_saved_sender_with_non_email_login(self) -> None:
+        for args in (["draft", "create", "--to", "recipient@example.com"],
+                     ["draft", "reply", "--folder", "INBOX", "--uid", "1"]):
+            with self.subTest(args=args), patch("imap_agent_cli.cli.load_config", return_value=Config()), patch("imap_agent_cli.cli._session") as factory, patch("sys.stdout", StringIO()):
+                session = factory.return_value.__enter__.return_value
+                session.profile = Profile(name="default", host="imap.example.com", username="login123", sender="sender@example.com")
+                session._fetch_raw.return_value = b"From: recipient@example.com\r\nSubject: Example\r\nMessage-ID: <original@example.com>\r\n\r\nBody"
+                session.append_draft.return_value = {"created": True}
+                self.assertEqual(main([*args, "--body", "Draft text"]), 0)
+                self.assertEqual(session.append_draft.call_args.args[0]["From"], "sender@example.com")
 
     def test_search_scope_defaults_and_explicit_overrides(self) -> None:
         cases = [

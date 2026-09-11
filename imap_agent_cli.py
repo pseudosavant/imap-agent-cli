@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.11,<3.14"
 # dependencies = [
 #   "IMAPClient>=3.0.0",
 #   "beautifulsoup4>=4.12.0",
@@ -7,6 +7,9 @@
 #   "markdownify>=0.14.0",
 #   "packaging>=23.2",
 #   "PyYAML>=6.0",
+#   "prompt-toolkit>=3.0.43",
+#   "tomlkit>=0.13.0",
+#   "filelock>=3.16.0",
 # ]
 # ///
 """Local development wrapper for imap-agent-cli."""

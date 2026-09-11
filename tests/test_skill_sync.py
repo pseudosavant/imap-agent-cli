@@ -418,7 +418,7 @@ class SkillSyncTests(unittest.TestCase):
                     sync.assert_not_called()
 
     def test_normal_commands_help_version_about_and_no_args_sync(self) -> None:
-        for argv in ([], ["--help"], ["-h"], ["--version"], ["--about"], ["read", "--help"], ["profiles"]):
+        for argv in ([], ["--help"], ["-h"], ["--version"], ["--about"], ["read", "--help"]):
             self.write(self.older())
             with patch("sys.stdout", new=StringIO()), patch("imap_agent_cli.cli.load_config", return_value=Config()):
                 try:
@@ -432,14 +432,15 @@ class SkillSyncTests(unittest.TestCase):
             self.write(self.older() + ("\nAltered\n" if mode == "altered" else ""))
             self.stderr.seek(0)
             self.stderr.truncate()
-            with patch("sys.stdout", new=StringIO()) as stdout, patch("imap_agent_cli.cli.load_config", return_value=Config()):
+            with patch("sys.stdout", new=StringIO()) as stdout, patch("imap_agent_cli.cli._session") as session:
+                session.return_value.__enter__.return_value.folders.return_value = {"folders": []}
                 if mode == "failure":
                     with patch("imap_agent_cli.skill.os.replace", side_effect=PermissionError):
-                        code = main(["profiles"])
+                        code = main(["folders"])
                 else:
-                    code = main(["profiles"])
+                    code = main(["folders"])
             self.assertEqual(code, 0)
-            self.assertEqual(json.loads(stdout.getvalue()), {"profiles": [], "default": "default"})
+            self.assertEqual(json.loads(stdout.getvalue()), {"folders": []})
             self.assertTrue(self.stderr.getvalue())
 
     def test_sync_failure_preserves_primary_error_and_explicit_error_model(self) -> None:

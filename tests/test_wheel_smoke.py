@@ -27,19 +27,20 @@ class WheelSmokeTests(unittest.TestCase):
             environment = root / "environment"
             fake_home = root / "home"
             fake_home.mkdir()
-            env = {**os.environ, "HOME": str(fake_home), "USERPROFILE": str(fake_home)}
+            env = {**{key: value for key, value in os.environ.items() if not key.startswith("IMAP_AGENT_CLI_")},
+                   "HOME": str(fake_home), "USERPROFILE": str(fake_home), "UV_PYTHON": sys.executable}
             env.pop("PYTHONPATH", None)
             env.pop("VIRTUAL_ENV", None)
             if os.name == "nt":
                 env["HOMEDRIVE"] = fake_home.drive
                 env["HOMEPATH"] = str(fake_home)[len(fake_home.drive):]
 
-            def run(*args: str) -> subprocess.CompletedProcess[str]:
+            def run(*args: str, expected_code: int = 0) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(
                     list(args), cwd=root, env=env, capture_output=True, text=True,
                     encoding="utf-8", timeout=60, check=False,
                 )
-                self.assertEqual(result.returncode, 0, f"command failed: {args}\n{result.stdout}\n{result.stderr}")
+                self.assertEqual(result.returncode, expected_code, f"command failed: {args}\n{result.stdout}\n{result.stderr}")
                 return result
 
             run(uv, "venv", str(environment), "--python", sys.executable)
@@ -53,6 +54,12 @@ class WheelSmokeTests(unittest.TestCase):
             installed_version = run(python, "-c", "from importlib.metadata import version\nprint(version('imap-agent-cli'))").stdout.strip()
             self.assertEqual(version, installed_version)
             self.assertEqual(cli("--version").stderr, "")
+            self.assertIn("--replace-password", cli("setup", "--help").stdout)
+            console = str(environment / ("Scripts/imap-agent-cli.exe" if os.name == "nt" else "bin/imap-agent-cli"))
+            missing = run(console, "setup", "--non-interactive", expected_code=1)
+            self.assertEqual(missing.stdout, "")
+            self.assertIn("setup_incomplete", missing.stderr)
+            self.assertFalse((fake_home / ".imap-agent-cli").exists())
             path = fake_home / ".agents" / "skills" / "imap" / "SKILL.md"
             self.assertFalse(path.exists())
             cli("skill", "install")
@@ -80,13 +87,31 @@ class WheelSmokeTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), canonical)
 
             uvx_skills = root / "uvx-skills"
-            result = run(uv, "tool", "run", "--from", str(repository), "imap-agent-cli", "skill", "install", "--skills-dir", str(uvx_skills))
+            result = run(uv, "tool", "run", "--from", str(wheel), "imap-agent-cli", "skill", "install", "--skills-dir", str(uvx_skills))
             self.assertTrue(json.loads(result.stdout)["installed"])
             self.assertEqual((uvx_skills / "imap" / "SKILL.md").read_bytes(), canonical)
 
+            # Both the wheel entry point and PEP 723 wrapper accept the same
+            # isolated config and named environment credential without a TTY.
+            config = root / "account.toml"
+            secret = root / "secrets.toml"
+            config.write_text('[profiles.default]\nhost = "imap.example.com"\nusername = "demo@example.com"\npassword_env = "IMAP_AGENT_CLI_SMOKE_PASSWORD"\n', encoding="utf-8")
+            env["IMAP_AGENT_CLI_SMOKE_PASSWORD"] = "dummy-smoke-password"
+            for prefix in ((console,), (uv, "run", str(repository / "imap_agent_cli.py"))):
+                result = run(*prefix, "config", "check", "--local", "--config", str(config), "--credentials-file", str(secret))
+                report = json.loads(result.stdout)
+                self.assertTrue(report["ok"])
+                self.assertEqual(report["verification"], "not_checked")
+                self.assertNotIn("dummy-smoke-password", result.stdout + result.stderr)
+                self.assertFalse(secret.exists())
+
             # These installations produce real PEP 610 directory metadata.
             # Explicit skill installation must still work in both cases.
-            for source_args in ((str(repository),), ("--editable", str(repository))):
+            source_installs = [(str(repository),), ("--editable", str(repository))]
+            source_archive = wheel.parent / f"imap_agent_cli-{version}.tar.gz"
+            if source_archive.exists():
+                source_installs.append((str(source_archive),))
+            for source_args in source_installs:
                 run(uv, "pip", "install", "--python", python, "--reinstall-package", "imap-agent-cli", *source_args)
                 path.write_bytes(older())
                 skipped = cli("--version")

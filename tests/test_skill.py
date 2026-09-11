@@ -47,6 +47,15 @@ class SkillTests(unittest.TestCase):
         self.assertNotIn("UV_LINK_MODE", SKILL_MD)
         self.assertNotIn("C:\\tmp", SKILL_MD)
 
+    def test_skill_explains_onboarding_and_secret_boundaries(self) -> None:
+        self.assertIn("uvx imap-agent-cli setup", SKILL_MD)
+        self.assertIn("Never request credentials in agent chat", SKILL_MD)
+        self.assertIn("Never open or print the credentials file", SKILL_MD)
+        self.assertIn("config check --local", SKILL_MD)
+        self.assertIn("Microsoft 365 and Outlook.com", SKILL_MD)
+        self.assertIn("--non-interactive", SKILL_MD)
+        self.assertIn("--profile NAME", SKILL_MD)
+
     def test_installed_skill_requires_requested_search_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             install_skill(Path(tmp))

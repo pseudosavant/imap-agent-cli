@@ -4,40 +4,51 @@
 
 It never sends email and cannot change existing messages or folders.
 
-## Prerequisite
-
-`imap-agent-cli` is designed to be used with [`uv`](https://docs.astral.sh/uv/getting-started/installation/). Install `uv` before continuing. The documented workflows and managed agent skill use `uvx` to run the tool without requiring a global installation.
-
 ## Quick start with an agent
 
-Install the managed `imap` agent skill:
+You need an IMAP-enabled email account and a compatible password or app password. Setup explains credential creation for Gmail, Fastmail, and iCloud. Other IMAP servers need their provider's hostname and login details. Microsoft 365 and Outlook.com require OAuth and are not supported. Microsoft app passwords are not a workaround.
 
-```text
-uvx imap-agent-cli skill install
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if needed. The managed skill runs the tool with `uvx`. You do not need a global tool installation. uv can obtain a compatible Python automatically. Direct Python installs require Python 3.11 through 3.13. IMAPClient is currently incompatible with Python 3.14.
+
+PowerShell:
+
+```powershell
+# Skip this command if uv is already installed.
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Open a new PowerShell window after installation.
+uv --version
+uvx imap-agent-cli setup --format plain
 ```
 
-Configure a default IMAP account through environment variables:
+Bash on Linux or macOS:
 
-```text
-IMAP_AGENT_CLI_HOST=imap.example.com
-IMAP_AGENT_CLI_PORT=993
-IMAP_AGENT_CLI_USERNAME=me@example.com
-IMAP_AGENT_CLI_PASSWORD=your-password-or-app-password
-IMAP_AGENT_CLI_TLS=true
-IMAP_AGENT_CLI_SSL_MODE=required
+```bash
+# Skip these two commands if uv is already installed.
+curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
+
+uv --version
+uvx imap-agent-cli setup --format plain
 ```
 
-Check the connection without reading message bodies:
+Enter your credential only at the masked terminal prompt. Never paste a credential into agent chat. Setup saves account settings and credentials separately, verifies read-only mailbox access, and installs the managed `imap` skill. No separate test command is needed after successful setup.
+
+You can provide information you already know:
 
 ```text
-uvx imap-agent-cli config check
+uvx imap-agent-cli setup "me@gmail.com"
+uvx imap-agent-cli setup "https://app.fastmail.com/"
+uvx imap-agent-cli setup --host imap.example.com --username me@example.com
 ```
 
-Then use `$imap` in Codex, Claude Code, or another agentic tool that supports skills:
+A webmail URL is only a provider hint. It is not fetched. Custom email domains require a provider hostname. See [setup and credential guidance](docs/setup.md) for provider requirements and recovery commands.
 
-> Use $imap to find the five most recent emails about the Acme renewal. Summarize the latest thread and create a reply draft asking for the updated contract. Do not download attachments.
+Start a new agent session if the skill is not available. Then ask:
 
-The skill teaches the agent to search before reading, keep operations bounded, download attachments only when requested, and create drafts without sending them.
+> Use $imap to list the five newest messages in INBOX. Show senders and subjects only.
+
+The agent must have access to `uvx`, the saved files, and the IMAP server. A remote host or container needs its own runtime and credential provision. If terminal use works but agent use fails, ask the agent to run `uvx imap-agent-cli config check`. Do not ask it to open the credentials file.
 
 ## What it can do
 
@@ -95,51 +106,63 @@ The usual workflow is to search first, select a result by folder and UID, read o
 
 ## Configure accounts
 
-### One account with environment variables
-
-For a single account, environment variables are enough:
+### Saved accounts
 
 ```text
-IMAP_AGENT_CLI_HOST=imap.example.com
-IMAP_AGENT_CLI_PORT=993
-IMAP_AGENT_CLI_USERNAME=me@example.com
-IMAP_AGENT_CLI_PASSWORD=your-password-or-app-password
-IMAP_AGENT_CLI_TLS=true
-IMAP_AGENT_CLI_SSL_MODE=required
-IMAP_AGENT_CLI_DRAFTS_FOLDER=Drafts
+uvx imap-agent-cli setup
+uvx imap-agent-cli setup --profile work
+uvx imap-agent-cli setup --profile work --set-default
+uvx imap-agent-cli profiles
+uvx imap-agent-cli config show
 ```
 
-`IMAP_AGENT_CLI_DRAFTS_FOLDER` is optional. When omitted, the CLI tries the server's IMAP special-use metadata and common Drafts folder names.
+The first account uses the name `default`. Adding an account preserves the existing default. Pass `--profile work` to mailbox commands to select it.
 
-Validate the resolved configuration, login, folders, default folder, and Drafts detection without reading message bodies:
+Non-secret settings live in `~/.imap-agent-cli/config.toml`. Setup saves entered passwords in `~/.imap-agent-cli/credentials.toml` with normal inherited permissions. It does not require a keyring, change ACLs, or persist shell variables. The credential file is plain text. Keep it out of repositories and shared exports.
+
+Repeated setup reuses existing credentials and preserves unrelated configuration and skill content. Use `setup --replace-password` to verify and save a replacement. Unset password environment overrides first. Existing configuration remains usable if verification or saving fails.
+
+### Environment overrides
+
+Environment variables remain available. Connection flags take priority over non-empty environment overrides, followed by the selected saved profile and built-in defaults. Password resolution uses explicit stdin, the profile's named password variable, the global password variable, and finally the matching saved credential. Rejected credentials do not trigger fallback to another source.
+
+PowerShell:
+
+```powershell
+$env:IMAP_AGENT_CLI_HOST = "imap.example.com"
+$env:IMAP_AGENT_CLI_USERNAME = "me@example.com"
+$imapCredential = Read-Host "IMAP password or app password" -AsSecureString
+$env:IMAP_AGENT_CLI_PASSWORD = [System.Net.NetworkCredential]::new("", $imapCredential).Password
+Remove-Variable imapCredential
+uvx imap-agent-cli setup --non-interactive
+```
+
+Bash:
+
+```bash
+export IMAP_AGENT_CLI_HOST="imap.example.com"
+export IMAP_AGENT_CLI_USERNAME="me@example.com"
+read -rs -p "IMAP password or app password: " IMAP_AGENT_CLI_PASSWORD
+printf '\n'
+export IMAP_AGENT_CLI_PASSWORD
+uvx imap-agent-cli setup --non-interactive
+```
+
+These variables affect the current shell and its children. An already-running agent does not inherit later changes. Setup uses an environment password without saving its value. Secure defaults supply port `993`, `tls=true`, and `ssl_mode=required`.
+
+The existing `config init`, `config add-profile`, and `config set-default-profile` commands remain available. `config init` creates a starter file. Prefer `setup` to complete onboarding. Existing `password_env` references continue to work.
+
+### Check configuration
 
 ```text
 uvx imap-agent-cli config check
+uvx imap-agent-cli config check --profile work --format plain
+uvx imap-agent-cli config check --local
 ```
 
-### Multiple account profiles
+Checks never write configuration, credentials, or skills. The network check verifies login, opens the default mailbox read-only, and checks bounded metadata access. It never reads bodies or appends a test message. Missing Drafts is a warning for reading. Finding Drafts does not verify append permission or quota. An empty mailbox leaves metadata fetching untested.
 
-Create a config file when you need named accounts:
-
-```text
-uvx imap-agent-cli config init
-uvx imap-agent-cli config add-profile work --host imap.example.com --port 993 --username me@example.com --password-env IMAP_AGENT_CLI_WORK_PASSWORD
-uvx imap-agent-cli config set-default-profile work
-```
-
-The config file is stored at `~/.imap-agent-cli/config.toml`. Keep passwords in environment variables. Profiles store the name of the password environment variable, not the password itself.
-
-The CLI uses standard IMAP username and password authentication. It does not provide OAuth setup. Providers that disable account-password login may require an app password.
-
-Inspect resolved settings without exposing secrets, or list available profiles:
-
-```text
-uvx imap-agent-cli config show
-uvx imap-agent-cli profiles
-uvx imap-agent-cli config check --profile work
-```
-
-Pass `--profile NAME` to any mailbox command to select a non-default profile. Direct commands also accept connection flags and `--password-stdin` for one-off use.
+Use `--config PATH` or `IMAP_AGENT_CLI_CONFIG` for another configuration file. Use `--credentials-file PATH` or `IMAP_AGENT_CLI_CREDENTIALS_FILE` for a separate credential file. Explicit paths work with setup, diagnostics, and mailbox commands. Relative command-line paths resolve from the working directory. Setup saves an explicitly selected credential file path for later use. Custom skill locations use `--skills-dir PATH`.
 
 ### Connection security
 
@@ -261,7 +284,7 @@ uvx imap-agent-cli skill status
 uvx imap-agent-cli skill status --format plain
 ```
 
-Normal invocations of an installed CLI update a pristine older managed skill to the running CLI version. Synchronization is local. It does not query PyPI, refresh uv's cache, or update the CLI. Missing skills are never installed automatically. Unmanaged, modified, equal-version, and newer skills are preserved.
+Normal mailbox invocations and top-level help, version, and about commands of an installed CLI update a pristine older managed skill to the running CLI version. Synchronization is local. It does not query PyPI, refresh uv's cache, or update the CLI. Missing skills are never installed automatically. Unmanaged, modified, equal-version, and newer skills are preserved.
 
 Restore altered managed content explicitly:
 
@@ -301,7 +324,7 @@ uvx imap-agent-cli draft create --json draft.json
 uvx imap-agent-cli draft reply --json reply.json
 ```
 
-Use `--json -` to read the JSON request from stdin. Failures leave stdout empty and write a compact JSON error to stderr. Logs do not include passwords, message bodies, or attachment content.
+Use `--json -` to read the JSON request from stdin. Operational failures leave stdout empty and write a compact JSON error to stderr. Setup and configuration checks return structured readiness reports when verification or a later step fails. Check the exit status and the `ready` or `ok` field. Human diagnostics go to stderr. Add `--format plain` to setup or config check for a readable report. Logs do not include passwords, message bodies, or attachment content.
 
 Default guardrails keep work bounded:
 
@@ -320,6 +343,7 @@ Commands expose targeted overrides such as `--max-results`, `--max-scan`, `--max
 
 | Command | Purpose |
 | --- | --- |
+| `setup` | Verify and save an account, then install the managed skill |
 | `config` | Initialize, inspect, validate, and manage profile configuration |
 | `profiles` | List configured profile names |
 | `skill` | Install, inspect, or remove the managed agent skill |

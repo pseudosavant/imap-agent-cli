@@ -25,13 +25,18 @@ class Profile:
     host: str
     port: int = 993
     username: str = ""
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
     password_env: str = "IMAP_AGENT_CLI_PASSWORD"
     tls: bool = True
     ssl_mode: str = "required"
     drafts_folder: str = ""
     connect_timeout_seconds: int = 15
     read_timeout_seconds: int = 30
+    credential_id: str = ""
+    credential_source: str = "missing"
+    credentials_file: str = ""
+    auth: str = "password"
+    sender: str = ""
 
 
 @dataclass(frozen=True)
