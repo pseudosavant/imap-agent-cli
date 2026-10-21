@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 - 2026-10-20
+
+- Initialize standard streams as UTF-8 before output or skill synchronization. Read JSON input as UTF-8 and emit lossless ASCII-escaped JSON for reliable capture and piping on Windows.
+- Return structured errors for unexpected exceptions and output failures. Add `--debug` for redacted traceback locations without exception text, source lines, local values, or exception chains.
+- Distinguish network timeouts, connection failures, server failures, and missing messages. Include operation, phase, and attempt counts. Retry safe reads once after reconnecting and selecting the folder read-only.
+- Keep draft appends single-attempt. Report an unknown outcome after an append network failure so callers can inspect Drafts before creating another message.
+- Fetch headers and BODYSTRUCTURE for metadata reads and attachment listings. Fetch only the required text MIME part for body reads and thread context with BODY.PEEK. Read reply source metadata without transferring its attachments.
+- Fetch search metadata incrementally for UID ordering and stop after enough qualifying results. Preserve attachment filtering and sort bounded date candidates across folders with timezone-aware comparisons.
+- Add `search --minimal`, `--fields`, and `--timings` for smaller responses and optional phase diagnostics.
+- Add `--no-skill-sync` and `IMAP_AGENT_CLI_NO_SKILL_SYNC=1` to disable automatic skill checks and writes during ordinary commands and help.
+- Document the installed executable as an alternative to uvx in restricted environments. Identify uv cache failures before startup as launcher or environment problems without changing credential locations.
+- Update CLI help, the managed skill, and regression coverage for Unicode capture, selective MIME reads, retries, search efficiency, and structured failures.
+
+### Compatibility and limits
+
+- Preserve default response keys. JSON uses ASCII escapes on the wire and preserves exact Unicode values after parsing.
+- Attachment `size_bytes` can be `null` when BODYSTRUCTURE cannot provide the exact decoded size. Explicit downloads report exact decoded sizes.
+- Search counts describe inspected candidates and observed matches. Date ordering covers the bounded candidate sets across the requested folders.
+- `--max-scan` applies per folder after the server search. It does not limit server search work or the UID response. `--max-body-chars` limits returned text after rendering and does not cap transfer of the selected text part.
+
 ## 0.2.1 - 2026-09-08
 
 - Direct agents to search only `INBOX` when the user does not specify a folder or broader scope. Do not automatically expand empty or incomplete searches.
