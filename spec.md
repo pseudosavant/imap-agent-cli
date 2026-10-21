@@ -659,6 +659,10 @@ The selected Drafts folder should be cached only in config when the user explici
 2. Stderr is for diagnostics, warnings, progress, and errors.
 3. Logs must not include passwords or message bodies.
 4. Subjects, senders, recipients, and folder names may appear in payload JSON and should not be duplicated in logs by default.
+5. JSON input uses UTF-8. Streams initialize before synchronization or output. JSON output uses lossless ASCII escaping for fixed-encoding capture streams.
+6. Operational errors and automatic synchronization diagnostics are JSON on stderr. Multiple diagnostic events are separate JSON lines. Interactive setup may also emit human guidance.
+7. Unexpected exceptions return structured errors and a nonzero exit code. `--debug` includes redacted traceback locations without source lines, local values, raw exception text, or exception chains.
+8. Discard partial stdout on any nonzero exit status. If stderr is closed, an error payload cannot be delivered.
 
 ## Error Shape
 
@@ -687,6 +691,11 @@ Recommended error codes:
 9. `attachment_not_found`
 10. `write_not_allowed`
 11. `server_error`
+12. `connection_timeout`
+13. `output_failed`
+14. `internal_error`
+
+Network failures include operation, phase, and attempt count. Timeouts and dropped connections are retryable for reads. Safe reads reconnect and retry once. Draft append failures never trigger an automatic retry. A network failure during append has `retryable=false` and `outcome=unknown`. Check Drafts before deciding to retry.
 
 ## Logging
 
@@ -708,6 +717,14 @@ Requirements:
 ---
 
 ## Limits and Guardrails
+
+`max_scan` limits metadata candidates per folder after the server search. It does not bound server search work or UID response transfer. UID searches fetch incrementally and stop when enough qualifying results are available. Date searches inspect the bounded candidate sets from all requested folders before sorting. Counts describe candidates inspected and summaries observed. They are not total mailbox counts. `search --timings` exposes phase durations and attempt counts on stderr.
+
+`search --minimal` selects folder, UID, subject, `from`, and date and omits the query object. `--fields` selects result fields explicitly. JSON requests accept `minimal` and `fields`. Default payload keys remain compatible.
+
+Metadata reads use header and BODYSTRUCTURE fetches. Body reads transfer only the text part required by the requested format with BODY.PEEK. `max_body_chars` limits returned text after rendering. It does not limit network transfer. Attachment metadata reports `size_bytes=null` when decoded sizes cannot be determined from the structure. Explicit downloads report decoded sizes.
+
+`--no-skill-sync` or `IMAP_AGENT_CLI_NO_SKILL_SYNC=1` disables automatic skill checks and writes during ordinary commands and help. Explicit skill installation is unaffected. The installed executable is supported as an alternative to uvx when launcher cache access is restricted. Do not change credential paths to bypass access restrictions.
 
 Default limits:
 

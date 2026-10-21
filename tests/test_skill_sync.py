@@ -147,7 +147,7 @@ class SkillSyncTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), render_skill().encode("utf-8"))
         notice = self.stderr.getvalue()
         for expected in ("0.1.5", __version__, str(self.path)):
-            self.assertIn(expected, notice)
+            self.assertIn(expected, json.loads(notice)["diagnostic"]["message"])
         self.assertEqual(len(notice.splitlines()), 1)
         self.write(self.older())
         self.assertTrue(install_skill()["updated"])

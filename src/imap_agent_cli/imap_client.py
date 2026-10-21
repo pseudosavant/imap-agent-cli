@@ -4,16 +4,20 @@ import re
 import imaplib
 import socket
 import ssl
+import time
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .errors import AppError
 from .mime import attachment_infos, header_value, message_headers, parse_message, render_body, save_attachments
 from .models import Defaults, Profile
+from .mime_structure import body_part, message_structure, structure_attachments
+from .render import write_diagnostic
 from .search import build_criteria
 
 
@@ -28,6 +32,27 @@ SPECIAL_USE_MAP = {
 
 METADATA_FETCH_FIELDS = ["ENVELOPE", "INTERNALDATE", "RFC822.SIZE", "BODYSTRUCTURE", "FLAGS"]
 THREAD_HEADER_FETCH = "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES DATE FROM TO CC SUBJECT)]"
+READ_METADATA_FIELDS = ["BODY.PEEK[HEADER]", "BODYSTRUCTURE"]
+READ_ATTEMPTS = 2
+
+
+def _network_error(exc: Exception, operation: str, phase: str, *, attempts: int = 1, write: bool = False) -> AppError:
+    timeout = False
+    cause: BaseException | None = exc
+    visited: set[int] = set()
+    while cause is not None and id(cause) not in visited:
+        visited.add(id(cause))
+        timeout |= isinstance(cause, (TimeoutError, socket.timeout)) or (
+            isinstance(cause, (OSError, imaplib.IMAP4.abort)) and "timed out" in str(cause).lower()
+        )
+        cause = cause.__cause__ or cause.__context__
+    network = timeout or isinstance(exc, (OSError, imaplib.IMAP4.abort, EOFError))
+    code = "connection_timeout" if timeout else "connection_failed" if network else "server_error"
+    message = f"IMAP {phase} timed out." if timeout else f"IMAP {phase} failed."
+    if write and network:
+        message += " The draft may have been created. Verify Drafts before trying again."
+    return AppError(code, message, retryable=network and not write, operation=operation, phase=phase,
+                    attempts=attempts, outcome="unknown" if write and network else None)
 
 
 class ImapSession(AbstractContextManager["ImapSession"]):
@@ -36,6 +61,8 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         self.defaults = defaults
         self.server: Any = None
         self.security: dict[str, Any] = {}
+        self.timings = False
+        self.read_attempts = READ_ATTEMPTS
 
     def __enter__(self) -> "ImapSession":
         from .providers import reject_microsoft
@@ -76,18 +103,21 @@ class ImapSession(AbstractContextManager["ImapSession"]):
                 encrypted = True
                 method = "implicit_tls" if implicit else "starttls"
         except Exception as exc:
-            self._logout_quiet()
+            self._disconnect_quiet()
             if isinstance(exc, ssl.SSLCertVerificationError):
-                raise AppError("tls_failed", "The server certificate could not be verified. Check the hostname and trusted certificates, then run uvx imap-agent-cli config check.") from None
+                raise AppError("tls_failed", "The server certificate could not be verified. Check the hostname and trusted certificates, then run uvx imap-agent-cli config check.", operation="connect", phase="connect", attempts=1) from None
             if isinstance(exc, (TimeoutError, socket.timeout)):
-                raise AppError("connection_timeout", "The IMAP connection timed out. Check network access from this execution environment, then run uvx imap-agent-cli config check.", retryable=True) from None
-            raise AppError("connection_failed", "Could not establish the configured IMAP connection. Check the host, port, TLS settings, and network access. Run uvx imap-agent-cli setup to correct this profile.") from None
+                raise AppError("connection_timeout", "The IMAP connection timed out. Check network access from this execution environment, then run uvx imap-agent-cli config check.", retryable=True, operation="connect", phase="connect", attempts=1) from None
+            raise AppError("connection_failed", "Could not establish the configured IMAP connection. Check the host, port, TLS settings, and network access. Run uvx imap-agent-cli setup to correct this profile.", retryable=True, operation="connect", phase="connect", attempts=1) from None
         # Do not retry authentication via another transport or credential source.
         try:
             self.server.login(self.profile.username, self.profile.password)
-        except imaplib.IMAP4.abort:
-            self._logout_quiet()
-            raise AppError("connection_failed", "The connection closed during sign-in. Check network access and run uvx imap-agent-cli config check.", retryable=True) from None
+        except (TimeoutError, socket.timeout) as exc:
+            self._disconnect_quiet()
+            raise _network_error(exc, "connect", "login") from None
+        except imaplib.IMAP4.abort as exc:
+            self._disconnect_quiet()
+            raise _network_error(exc, "connect", "login") from None
         except imaplib.IMAP4.error:
             self._logout_quiet()
             if self.profile.credential_source.startswith("environment:"):
@@ -96,9 +126,9 @@ class ImapSession(AbstractContextManager["ImapSession"]):
                 selector = " --profile " + self.profile.name if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.profile.name) else ""
                 recovery = f"Run uvx imap-agent-cli setup{selector} --replace-password in your terminal."
             raise AppError("auth_failed", "The server rejected the credential. Check the login name and provider app-password requirements. " + recovery) from None
-        except Exception:
-            self._logout_quiet()
-            raise AppError("connection_failed", "The connection failed during sign-in. Check network access and run uvx imap-agent-cli config check.", retryable=True) from None
+        except Exception as exc:
+            self._disconnect_quiet()
+            raise _network_error(exc, "connect", "login") from None
         self.security = {"ssl_mode": ssl_mode, "encrypted": encrypted, "method": method}
         return self
 
@@ -116,21 +146,68 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             self.server = None
 
     def _select(self, folder: str, *, readonly: bool = True) -> dict:
+        def select():
+            try:
+                return self.server.select_folder(folder, readonly=readonly)
+            except imaplib.IMAP4.abort:
+                raise
+            except imaplib.IMAP4.error:
+                raise AppError("folder_not_found", "The requested folder could not be opened read-only. Check its name and access. Run uvx imap-agent-cli setup --default-folder INBOX to use the inbox. No read-write fallback was attempted.", operation="select", phase="select") from None
+        return self._read_call("select", select)
+
+    def _disconnect_quiet(self) -> None:
+        server, self.server = self.server, None
+        if server is not None:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+
+    def _read_call(self, operation: str, action: Callable[[], Any], *, folder: str | None = None,
+                   phase: str | None = None) -> Any:
+        """Retry a safe read once on a fresh authenticated connection."""
+        phase = phase or operation
+        started = time.monotonic()
+        attempts = 0
         try:
-            return self.server.select_folder(folder, readonly=readonly)
-        except Exception:
-            raise AppError("folder_not_found", "The requested folder could not be opened read-only. Check its name and access. Run uvx imap-agent-cli setup --default-folder INBOX to use the inbox. No read-write fallback was attempted.") from None
+            for attempts in range(1, self.read_attempts + 1):
+                failed_phase = phase
+                try:
+                    if attempts > 1:
+                        try:
+                            self.__enter__()
+                        except AppError as exc:
+                            exc.details.update(operation=operation, phase="reconnect", attempts=attempts)
+                            raise
+                        if folder is not None:
+                            failed_phase = "select"
+                            self.server.select_folder(folder, readonly=True)
+                        failed_phase = phase
+                    return action()
+                except AppError:
+                    raise
+                except Exception as exc:
+                    error = _network_error(exc, operation, failed_phase, attempts=attempts)
+                    if error.retryable:
+                        self._disconnect_quiet()
+                        if attempts < self.read_attempts:
+                            continue
+                    raise error from None
+        finally:
+            if self.timings:
+                try:
+                    write_diagnostic({"diagnostic": {"operation": operation, "phase": phase,
+                                      "elapsed_ms": round((time.monotonic() - started) * 1000, 3), "attempts": attempts}})
+                except AppError:
+                    pass
 
     def capabilities(self) -> list[str]:
-        try:
-            values = self.server.capabilities()
-        except Exception:
-            raise AppError("server_error", "Could not inspect IMAP capabilities. Retry uvx imap-agent-cli config check.") from None
+        values = self._read_call("capabilities", lambda: self.server.capabilities())
         return sorted(_text(value).upper() for value in values)
 
     def folders(self) -> dict[str, Any]:
         folders = []
-        for flags, delimiter, name in self.server.list_folders():
+        for flags, delimiter, name in self._read_call("list_folders", lambda: self.server.list_folders()):
             flag_values = [flag.decode() if isinstance(flag, bytes) else str(flag) for flag in flags]
             special = None
             for flag in flag_values:
@@ -140,11 +217,12 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             unread = None
             if selectable:
                 try:
-                    status = self.server.folder_status(name, ["MESSAGES", "UNSEEN"])
+                    status = self._read_call("folder_status", lambda: self.server.folder_status(name, ["MESSAGES", "UNSEEN"]))
                     total = _lookup_status(status, "MESSAGES")
                     unread = _lookup_status(status, "UNSEEN")
-                except Exception:
-                    pass
+                except AppError as exc:
+                    if exc.retryable or exc.code != "server_error":
+                        raise
             folders.append(
                 {
                     "name": name,
@@ -218,39 +296,41 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             raise AppError("invalid_request", "--max-results must be greater than zero.")
         if max_scan <= 0:
             raise AppError("invalid_request", "--max-scan must be greater than zero.")
+        if sort not in {"uid", "date"} or order not in {"asc", "desc"}:
+            raise AppError("invalid_request", "--sort must be uid or date and --order must be asc or desc.")
         results: list[dict[str, Any]] = []
         scanned_count = 0
         matched_count = 0
         truncated = False
-        for current_folder in self._folder_names_for_scope(folder, scope):
+        folder_names = self._folder_names_for_scope(folder, scope)
+        for folder_index, current_folder in enumerate(folder_names):
             self._select(current_folder, readonly=True)
-            try:
-                uids = list(self.server.search(criteria))
-            except Exception as exc:
-                raise AppError("server_error", f"search failed in folder '{current_folder}': {exc}") from exc
+            uids = self._read_call("search", lambda: list(self.server.search(criteria)), folder=current_folder)
             ordered_uids = sorted((int(uid) for uid in uids), reverse=(order == "desc"))
             if len(ordered_uids) > max_scan:
                 truncated = True
             scan_uids = ordered_uids[:max_scan]
-            scanned_count += len(scan_uids)
-            summaries = self._summaries(current_folder, scan_uids)
-            if has_attachments:
-                summaries = [summary for summary in summaries if bool(summary.get("has_attachments"))]
-            if sort == "date":
-                summaries.sort(key=_summary_date_sort_key, reverse=(order == "desc"))
-            elif sort == "uid":
-                summaries.sort(key=lambda item: int(item["uid"]), reverse=(order == "desc"))
-            else:
-                raise AppError("invalid_request", "--sort must be uid or date.")
-            matched_count += len(summaries)
-            remaining = max_results - len(results)
-            results.extend(summaries[:remaining])
-            if len(summaries) > remaining:
-                truncated = True
-            if len(results) >= max_results:
-                if len(ordered_uids) > len(scan_uids):
-                    truncated = True
+            offset = 0
+            while offset < len(scan_uids):
+                remaining = max_results - len(results)
+                size = 50 if sort == "date" else min(50, remaining)
+                chunk = scan_uids[offset:offset + size]
+                offset += len(chunk)
+                scanned_count += len(chunk)
+                summaries = self._summaries(current_folder, chunk)
+                if has_attachments:
+                    summaries = [item for item in summaries if item["has_attachments"]]
+                matched_count += len(summaries)
+                results.extend(summaries)
+                if sort == "uid" and len(results) >= max_results:
+                    truncated |= offset < len(ordered_uids) or folder_index + 1 < len(folder_names)
+                    break
+            if sort == "uid" and len(results) >= max_results:
                 break
+        if sort == "date":
+            results.sort(key=_summary_date_sort_key, reverse=(order == "desc"))
+            truncated |= len(results) > max_results
+        results = results[:max_results]
         return {
             "profile": self.profile.name,
             "query": {
@@ -287,10 +367,7 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             return []
         summaries: list[dict[str, Any]] = []
         for chunk in _chunks(uid_list, 50):
-            try:
-                data = self.server.fetch(chunk, METADATA_FETCH_FIELDS)
-            except Exception as exc:
-                raise AppError("server_error", f"metadata fetch failed in folder '{folder}': {exc}") from exc
+            data = self._read_call("search", lambda: self.server.fetch(chunk, METADATA_FETCH_FIELDS), folder=folder, phase="metadata_fetch")
             for uid in chunk:
                 entry = _fetch_entry(data, uid)
                 if entry is None:
@@ -300,17 +377,13 @@ class ImapSession(AbstractContextManager["ImapSession"]):
 
     def _fetch_raw(self, folder: str, uid: int) -> bytes:
         self._select(folder, readonly=True)
-        try:
-            data = self.server.fetch([uid], ["BODY.PEEK[]"])
-        except Exception as exc:
-            raise AppError("message_not_found", f"message UID {uid} could not be fetched from '{folder}'.") from exc
-        entry = data.get(uid) or data.get(str(uid)) or data.get(bytes(str(uid), "ascii"))
-        if not entry:
+        data = self._read_call("read", lambda: self.server.fetch([uid], ["BODY.PEEK[]"]), folder=folder, phase="body_fetch")
+        entry = _fetch_entry(data, uid)
+        if entry is None:
             raise AppError("message_not_found", f"message UID {uid} was not found in '{folder}'.")
-        for key, value in entry.items():
-            key_text = key.decode() if isinstance(key, bytes) else str(key)
-            if "BODY" in key_text.upper():
-                return value
+        raw = _fetch_value(entry, ["BODY[]"])
+        if isinstance(raw, bytes):
+            return raw
         raise AppError("server_error", f"server did not return message body for UID {uid}.")
 
     def read(
@@ -322,9 +395,23 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         max_body_chars: int,
         include_attachments: str,
     ) -> dict[str, Any]:
-        raw = self._fetch_raw(folder, uid)
-        message = parse_message(raw)
-        return message_payload(
+        if body_format not in {"metadata", "plain", "html", "raw-html", "markdown"} or max_body_chars < 0:
+            raise AppError("invalid_request", "Use a supported body format and a nonnegative --max-body-chars.")
+        message, leaves = self._message_metadata(folder, uid)
+        if body_format != "metadata":
+            selected = body_part(leaves, body_format)
+            if selected:
+                section, node = selected
+                data = self._read_call("read", lambda: self.server.fetch([uid], [f"BODY.PEEK[{section}]"]),
+                                       folder=folder, phase="body_fetch")
+                entry = _fetch_entry(data, uid)
+                if entry is None:
+                    raise AppError("message_not_found", "The message disappeared before its body could be read.", operation="read", phase="body_fetch")
+                raw = _fetch_value(entry, [f"BODY[{section}]"])
+                if not isinstance(raw, bytes):
+                    raise AppError("server_error", "The server did not return the requested MIME part.", operation="read", phase="body_fetch")
+                node.set_payload(raw)
+        payload = message_payload(
             profile=self.profile.name,
             folder=folder,
             uid=uid,
@@ -333,15 +420,32 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             max_body_chars=max_body_chars,
             include_attachments=include_attachments,
         )
+        attachments = structure_attachments(leaves)
+        payload.update(has_attachments=bool(attachments), attachment_count=len(attachments))
+        if "attachments" in payload:
+            payload["attachments"] = attachments
+        return payload
+
+    def _message_metadata(self, folder: str, uid: int) -> tuple[EmailMessage, list]:
+        self._select(folder, readonly=True)
+        data = self._read_call("read", lambda: self.server.fetch([uid], READ_METADATA_FIELDS),
+                               folder=folder, phase="metadata_fetch")
+        entry = _fetch_entry(data, uid)
+        if entry is None:
+            raise AppError("message_not_found", "The requested message was not found.", operation="read", phase="metadata_fetch")
+        headers = _fetch_value(entry, ["BODY[HEADER]"])
+        structure = _fetch_value(entry, ["BODYSTRUCTURE"])
+        if not isinstance(headers, bytes) or structure is None:
+            raise AppError("server_error", "The server did not return message headers and MIME structure.", operation="read", phase="metadata_fetch")
+        return message_structure(headers, structure)
 
     def attachments(self, *, folder: str, uid: int) -> dict[str, Any]:
-        raw = self._fetch_raw(folder, uid)
-        message = parse_message(raw)
+        _, leaves = self._message_metadata(folder, uid)
         return {
             "profile": self.profile.name,
             "folder": folder,
             "uid": uid,
-            "attachments": [info for info in attachment_infos(message)],
+            "attachments": structure_attachments(leaves),
         }
 
     def download_attachments(
@@ -384,7 +488,7 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         for candidate in ("drafts", "inbox.drafts", "[gmail]/drafts"):
             if candidate in names:
                 return names[candidate]
-        raise AppError("drafts_folder_not_found", "could not auto-detect Drafts folder; configure drafts_folder.")
+        raise AppError("drafts_folder_not_found", "Could not auto-detect Drafts folder. Configure drafts_folder.")
 
     def append_draft(self, message: EmailMessage, *, drafts_folder: str | None = None) -> dict[str, Any]:
         folder = self.resolve_drafts_folder(drafts_folder)
@@ -392,7 +496,10 @@ class ImapSession(AbstractContextManager["ImapSession"]):
         try:
             result = self.server.append(folder, raw)
         except Exception as exc:
-            raise AppError("server_error", f"failed to append draft to '{folder}': {exc}") from exc
+            error = _network_error(exc, "append", "append", write=True)
+            if error.code in {"connection_failed", "connection_timeout"}:
+                self._disconnect_quiet()
+            raise error from None
         return {
             "profile": self.profile.name,
             "drafts_folder": folder,
@@ -421,16 +528,12 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             raise AppError("invalid_request", "--max-scan must be greater than zero.")
         if include_body not in {"none", "latest", "all"}:
             raise AppError("invalid_request", "--include-body must be none, latest, or all.")
-        source_raw = self._fetch_raw(folder, uid)
-        source_message = parse_message(source_raw)
+        source_message, _ = self._message_metadata(folder, uid)
         source_ids = _thread_ids_from_message(source_message)
         if not source_ids:
             source_ids = {f"uid:{uid}"}
         self._select(folder, readonly=True)
-        try:
-            all_uids = sorted((int(item) for item in self.server.search(["ALL"])), reverse=True)
-        except Exception as exc:
-            raise AppError("server_error", f"thread scan failed in folder '{folder}': {exc}") from exc
+        all_uids = self._read_call("thread", lambda: sorted((int(item) for item in self.server.search(["ALL"])), reverse=True), folder=folder, phase="search")
         scan_uids = all_uids[:max_scan]
         headers = self._thread_headers(folder, scan_uids)
         related = [
@@ -450,10 +553,10 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             body_uids = {int(messages[-1]["uid"])}
         for item in messages:
             if int(item["uid"]) in body_uids:
-                body_raw = self._fetch_raw(folder, int(item["uid"]))
-                body_message = parse_message(body_raw)
-                item["body"] = render_body(body_message, body_format, max_body_chars)
-                item["attachments"] = [info for info in attachment_infos(body_message)]
+                payload = self.read(folder=folder, uid=int(item["uid"]), body_format=body_format,
+                                    max_body_chars=max_body_chars, include_attachments="metadata")
+                item["body"] = payload["body"]
+                item["attachments"] = payload["attachments"]
         return {
             "profile": self.profile.name,
             "folder": folder,
@@ -471,10 +574,7 @@ class ImapSession(AbstractContextManager["ImapSession"]):
             return []
         headers: list[dict[str, Any]] = []
         for chunk in _chunks(uid_list, 50):
-            try:
-                data = self.server.fetch(chunk, [THREAD_HEADER_FETCH, "INTERNALDATE", "FLAGS"])
-            except Exception as exc:
-                raise AppError("server_error", f"thread header fetch failed in folder '{folder}': {exc}") from exc
+            data = self._read_call("thread", lambda: self.server.fetch(chunk, [THREAD_HEADER_FETCH, "INTERNALDATE", "FLAGS"]), folder=folder, phase="metadata_fetch")
             for uid in chunk:
                 entry = _fetch_entry(data, uid)
                 if entry is None:
@@ -540,10 +640,11 @@ def _fetch_entry(data: dict[Any, Any], uid: int) -> dict[Any, Any] | None:
 
 
 def _fetch_value(entry: dict[Any, Any], names: Iterable[str]) -> Any:
-    wanted = {name.upper() for name in names}
+    wanted = {name.upper().replace("BODY.PEEK[", "BODY[") for name in names}
     for key, value in entry.items():
         key_text = _text(key).upper()
-        if key_text in wanted or any(name in key_text for name in wanted):
+        normalized = key_text.replace("BODY.PEEK[", "BODY[")
+        if normalized in wanted or "BODY" in wanted and normalized.startswith("BODY["):
             return value
     return None
 
@@ -617,6 +718,12 @@ def _bodystructure_tokens(value: Any) -> list[str]:
 
 
 def _attachment_count_from_bodystructure(value: Any) -> int:
+    try:
+        _, leaves = message_structure(b"", value)
+        return len(structure_attachments(leaves))
+    except AppError:
+        # Preserve summary compatibility with incomplete server structures.
+        pass
     tokens = _bodystructure_tokens(value)
     return sum(1 for token in tokens if token == "attachment")
 
@@ -647,8 +754,19 @@ def _summary_from_fetch(folder: str, uid: int, entry: dict[Any, Any]) -> dict[st
     }
 
 
-def _summary_date_sort_key(item: dict[str, Any]) -> tuple[str, int]:
-    return (str(item.get("internal_date") or item.get("date") or ""), int(item.get("uid") or 0))
+def _summary_date_sort_key(item: dict[str, Any]) -> tuple[float, int]:
+    value = str(item.get("internal_date") or item.get("date") or "")
+    try:
+        try:
+            date = datetime.fromisoformat(value)
+        except ValueError:
+            date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        timestamp = date.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        timestamp = float("-inf")
+    return timestamp, int(item.get("uid") or 0)
 
 
 def _message_ids_from_header(value: str) -> set[str]:

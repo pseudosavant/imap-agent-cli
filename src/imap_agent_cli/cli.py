@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .config import config_path, add_profile, config_status, init_config, load_config, remove_profile, resolve_profile, set_default_profile
-from .errors import AppError, ConfigError
+from .errors import AppError
 from .imap_client import ImapSession
-from .mime import create_draft_message, header_value, parse_message
-from .render import write_error, write_json
+from .mime import create_draft_message, header_value
+from .render import initialize_streams, write_error, write_json, write_text
 from .skill import install_skill, remove_skill, skill_status, sync_skill
 from .storage import paths
 from .credentials import credentials_path
@@ -52,6 +54,12 @@ Common workflows:
 Output:
   stdout is JSON payload only for operational commands
   stderr is diagnostics/errors only
+  JSON input is UTF-8. JSON output uses lossless ASCII escapes for Unicode.
+  --debug adds a redacted traceback. Unexpected errors are structured by default.
+  search --minimal or --fields folder,uid,subject,from,date reduces response size.
+  search --timings writes phase timings to stderr.
+  --max-scan bounds metadata reads after server search, not server search work.
+  --max-body-chars limits returned text, not network transfer.
 
 Commands:
   setup           verify and save an account and install the managed skill
@@ -74,6 +82,8 @@ Agent skill:
   Installed managed skills in ~/.agents/skills/imap synchronize to newer CLI versions.
   Modified skills are preserved. Local development builds skip synchronization.
   Custom locations require explicit updates with --skills-dir PATH.
+  --no-skill-sync or IMAP_AGENT_CLI_NO_SKILL_SYNC=1 disables automatic updates.
+  An installed imap-agent-cli command can replace uvx imap-agent-cli.
 
 More help:
   imap-agent-cli <command> --help
@@ -96,12 +106,15 @@ License: {LICENSE_NAME}
 
 
 def _read_json_arg(value: str) -> dict[str, Any]:
-    if value == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(value).read_text(encoding="utf-8")
     try:
+        if value == "-":
+            buffer = getattr(sys.stdin, "buffer", None)
+            text = buffer.read().decode("utf-8") if buffer is not None else sys.stdin.read()
+        else:
+            text = Path(value).read_text(encoding="utf-8")
         payload = json.loads(text)
+    except UnicodeError as exc:
+        raise AppError("invalid_request", "JSON input must use UTF-8 encoding.") from exc
     except json.JSONDecodeError as exc:
         raise AppError("invalid_request", f"invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
@@ -274,7 +287,7 @@ def cmd_skill_status(args: argparse.Namespace) -> int:
     if args.format == "plain":
         for key, value in result.items():
             rendered = json.dumps(value) if value is None or isinstance(value, bool) else str(value)
-            sys.stdout.write(f"{key.replace('_', ' ')}: {rendered}\n")
+            write_text(f"{key.replace('_', ' ')}: {rendered}")
     else:
         write_json(result)
     return 0
@@ -301,37 +314,72 @@ def cmd_folders(args: argparse.Namespace) -> int:
 
 def cmd_search(args: argparse.Namespace) -> int:
     payload: dict[str, Any] = _read_json_arg(args.json_input) if args.json_input else {}
+    minimal = bool(args.minimal or payload.get("minimal", False))
+    fields = _search_fields(args.fields if args.fields is not None else payload.get("fields"), minimal)
     config = load_config()
     folder = args.folder or payload.get("folder") or config.defaults.default_folder
     scope = payload.get("scope") or ("all" if args.all_folders else "recursive" if args.recursive else "folder")
-    max_results = int(args.max_results or payload.get("max_results") or config.defaults.max_results)
-    max_scan = int(args.max_scan or payload.get("max_scan") or config.defaults.max_scan)
+    max_results = _request_int(args.max_results, payload, "max_results", config.defaults.max_results)
+    max_scan = _request_int(args.max_scan, payload, "max_scan", config.defaults.max_scan)
     with _session(args) as session:
-        write_json(
-            session.search(
-                folder=folder,
-                scope=str(scope),
-                subject=args.subject or payload.get("subject"),
-                sender=args.sender or payload.get("from"),
-                recipient=args.recipient or payload.get("to"),
-                message_id=args.message_id or payload.get("message_id"),
-                text=args.text or payload.get("text"),
-                since=args.since or payload.get("since"),
-                before=args.before or payload.get("before"),
-                unseen=bool(args.unseen or payload.get("unseen", False)),
-                seen=bool(args.seen or payload.get("seen", False)),
-                answered=bool(args.answered or payload.get("answered", False)),
-                flagged=bool(args.flagged or payload.get("flagged", False)),
-                larger=args.larger or payload.get("larger"),
-                smaller=args.smaller or payload.get("smaller"),
-                has_attachments=bool(args.has_attachments or payload.get("has_attachments", False)),
-                max_results=max_results,
-                max_scan=max_scan,
-                sort=str(args.sort or payload.get("sort") or "uid"),
-                order=str(args.order or payload.get("order") or "desc"),
-            )
+        session.timings = args.timings
+        result = session.search(
+            folder=folder,
+            scope=str(scope),
+            subject=args.subject or payload.get("subject"),
+            sender=args.sender or payload.get("from"),
+            recipient=args.recipient or payload.get("to"),
+            message_id=args.message_id or payload.get("message_id"),
+            text=args.text or payload.get("text"),
+            since=args.since or payload.get("since"),
+            before=args.before or payload.get("before"),
+            unseen=bool(args.unseen or payload.get("unseen", False)),
+            seen=bool(args.seen or payload.get("seen", False)),
+            answered=bool(args.answered or payload.get("answered", False)),
+            flagged=bool(args.flagged or payload.get("flagged", False)),
+            larger=args.larger or payload.get("larger"),
+            smaller=args.smaller or payload.get("smaller"),
+            has_attachments=bool(args.has_attachments or payload.get("has_attachments", False)),
+            max_results=max_results,
+            max_scan=max_scan,
+            sort=str(args.sort or payload.get("sort") or "uid"),
+            order=str(args.order or payload.get("order") or "desc"),
         )
+        if fields is not None:
+            result["results"] = [{key: item[key] for key in fields if key in item} for item in result["results"]]
+        if minimal:
+            result.pop("query", None)
+        write_json(result)
     return 0
+
+
+SEARCH_FIELDS = {"folder", "uid", "message_id", "date", "internal_date", "from", "to", "cc", "subject",
+                 "has_attachments", "attachment_count", "size_bytes", "flags"}
+
+
+def _request_int(flag: Any, payload: dict[str, Any], key: str, default: Any) -> int:
+    value = flag if flag is not None else payload.get(key, default)
+    try:
+        if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
+            raise ValueError
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AppError("invalid_request", f"{key} must be an integer.") from exc
+
+
+def _search_fields(value: Any, minimal: bool) -> list[str] | None:
+    if value is None:
+        return ["folder", "uid", "subject", "from", "date"] if minimal else None
+    fields = [item.strip() for item in value.split(",")] if isinstance(value, str) else value
+    if not isinstance(fields, list) or not fields or any(not isinstance(item, str) or item not in SEARCH_FIELDS for item in fields):
+        raise AppError("invalid_request", "Search fields must be a nonempty list of summary field names. Use search --help.")
+    return list(dict.fromkeys(fields))
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse messages can echo arbitrary request values, including secrets.
+        raise AppError("invalid_request", "Invalid command arguments. Use the command's --help for usage.", exit_code=2)
 
 
 def cmd_read(args: argparse.Namespace) -> int:
@@ -342,13 +390,13 @@ def cmd_read(args: argparse.Namespace) -> int:
         raise AppError("invalid_request", "read requires --folder and --uid.")
     config = load_config()
     body_format = args.body_format or payload.get("body_format") or config.defaults.body_format
-    max_body_chars = int(args.max_body_chars or payload.get("max_body_chars") or config.defaults.max_body_chars)
+    max_body_chars = _request_int(args.max_body_chars, payload, "max_body_chars", config.defaults.max_body_chars)
     include_attachments = _include_attachments(args.include_attachments or payload.get("include_attachments") or "metadata")
     with _session(args) as session:
         write_json(
             session.read(
                 folder=str(folder),
-                uid=int(uid),
+                uid=_request_int(args.uid, payload, "uid", None),
                 body_format=str(body_format),
                 max_body_chars=max_body_chars,
                 include_attachments=include_attachments,
@@ -361,8 +409,8 @@ def cmd_thread(args: argparse.Namespace) -> int:
     if not args.folder or args.uid is None:
         raise AppError("invalid_request", "thread requires --folder and --uid.")
     config = load_config()
-    max_body_chars = int(args.max_body_chars or config.defaults.max_body_chars)
-    max_scan = int(args.max_scan or config.defaults.max_scan)
+    max_body_chars = _request_int(args.max_body_chars, {}, "max_body_chars", config.defaults.max_body_chars)
+    max_scan = _request_int(args.max_scan, {}, "max_scan", config.defaults.max_scan)
     with _session(args) as session:
         write_json(
             session.thread(
@@ -452,8 +500,7 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
     body_format = args.body_format or payload.get("body_format") or "plain"
     attachments = [Path(path) for path in (args.attachment or payload.get("attachments") or [])]
     with _session(args) as session:
-        raw = session._fetch_raw(str(folder), int(uid))
-        source_message = parse_message(raw)
+        source_message, _ = session._message_metadata(str(folder), _request_int(args.uid, source, "uid", None))
         to = _parse_repeated_addresses(args.to) or _string_list(payload.get("to")) or _reply_recipients(source_message)
         source_message_id = header_value(source_message, "message-id")
         source_refs = header_value(source_message, "references").strip()
@@ -475,7 +522,7 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = JsonArgumentParser(
         prog="imap-agent-cli",
         description="Safe IMAP email access for agentic tools.",
     )
@@ -569,7 +616,10 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--smaller", type=int)
     search.add_argument("--has-attachments", action="store_true")
     search.add_argument("--max-results", type=int)
-    search.add_argument("--max-scan", type=int)
+    search.add_argument("--max-scan", type=int, help="maximum candidate metadata reads per folder after server search. Does not limit server search work")
+    search.add_argument("--minimal", action="store_true", help="return folder, uid, subject, from, and date. Omit the query object")
+    search.add_argument("--fields", help="comma-separated result fields: " + ", ".join(sorted(SEARCH_FIELDS)))
+    search.add_argument("--timings", action="store_true", help="write phase timings and attempt counts as JSON diagnostics on stderr")
     search.add_argument("--sort", choices=["uid", "date"], default=None)
     search.add_argument("--order", choices=["asc", "desc"], default=None)
     search.set_defaults(func=cmd_search)
@@ -580,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
     read.add_argument("--folder")
     read.add_argument("--uid", type=int)
     read.add_argument("--body-format", choices=["html", "markdown", "plain", "raw-html", "metadata"])
-    read.add_argument("--max-body-chars", type=int)
+    read.add_argument("--max-body-chars", type=int, help="limit returned text characters. Does not cap network transfer")
     read.add_argument("--include-attachments", choices=["none", "metadata", "false", "true"])
     read.set_defaults(func=cmd_read)
 
@@ -592,7 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
     thread.add_argument("--max-scan", type=int)
     thread.add_argument("--include-body", choices=["none", "latest", "all"], default="none")
     thread.add_argument("--body-format", choices=["html", "markdown", "plain", "raw-html", "metadata"], default="metadata")
-    thread.add_argument("--max-body-chars", type=int)
+    thread.add_argument("--max-body-chars", type=int, help="limit returned text characters. Does not cap network transfer")
     thread.set_defaults(func=cmd_thread)
 
     attachments = sub.add_parser("attachments", help="list attachment metadata for a message")
@@ -645,6 +695,8 @@ def build_parser() -> argparse.ArgumentParser:
     reply.set_defaults(func=cmd_draft_reply)
 
     def add_path_options(current):
+        current.add_argument("--no-skill-sync", action="store_true", default=argparse.SUPPRESS, help="disable automatic skill synchronization. Also IMAP_AGENT_CLI_NO_SKILL_SYNC=1")
+        current.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help="include a redacted traceback with errors. No exception messages, source lines, or local values")
         current.add_argument("--config", default=argparse.SUPPRESS, help="configuration file (or IMAP_AGENT_CLI_CONFIG)")
         current.add_argument("--credentials-file", default=argparse.SUPPRESS, help="separate credentials file (or IMAP_AGENT_CLI_CREDENTIALS_FILE)")
         for action in current._actions:
@@ -655,9 +707,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
+def _main(argv: list[str]) -> int:
+    sync_enabled = "--no-skill-sync" not in argv and os.environ.get("IMAP_AGENT_CLI_NO_SKILL_SYNC", "").lower() not in {"1", "true", "yes"}
+    control_args = [arg for arg in argv if arg not in {"--no-skill-sync", "--debug"}]
     # Skip global path values when identifying read-only command help.
     command = None
     arguments = iter(argv)
@@ -667,40 +719,59 @@ def main(argv: list[str] | None = None) -> int:
         elif not arg.startswith("-"):
             command = arg
             break
-    if not argv or argv in (["--help"], ["-h"], ["--version"], ["--about"]):
+    if sync_enabled and (not control_args or control_args in (["--help"], ["-h"], ["--version"], ["--about"])):
         sync_skill()
-    if not argv or argv in (["--help"], ["-h"]):
-        sys.stdout.write(TOP_LEVEL_HELP)
+    if not control_args or control_args in (["--help"], ["-h"]):
+        write_text(TOP_LEVEL_HELP)
         return 0
-    if argv == ["--about"]:
-        sys.stdout.write(ABOUT_TEXT)
+    if control_args == ["--about"]:
+        write_text(ABOUT_TEXT)
         return 0
-    if argv == ["--version"]:
-        sys.stdout.write(f"{__version__}\n")
+    if control_args == ["--version"]:
+        write_text(__version__)
         return 0
     parser = build_parser()
-    if any(flag in argv for flag in ("--help", "-h")) and command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
+    if sync_enabled and any(flag in argv for flag in ("--help", "-h")) and command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
         sync_skill()
     args = parser.parse_args(argv)
+    if getattr(args, "password_stdin", False) and getattr(args, "json_input", None) == "-":
+        raise AppError("invalid_request", "Password input and JSON input cannot both use stdin. Use --json PATH for the request or a password environment variable.")
+    with paths(getattr(args, "config", None), getattr(args, "credentials_file", None)):
+        if sync_enabled and args.command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
+            sync_skill()
+        return int(args.func(args))
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    caught: BaseException | None = None
     try:
-        if getattr(args, "password_stdin", False) and getattr(args, "json_input", None) == "-":
-            raise AppError("invalid_request", "Password input and JSON input cannot both use stdin. Use --json PATH for the request or a password environment variable.")
-        with paths(getattr(args, "config", None), getattr(args, "credentials_file", None)):
-            if args.command not in {"config", "profiles", "setup", "skill", "install-skill", "remove-skill"}:
-                sync_skill()
-            return int(args.func(args))
+        initialize_streams()
+        return _main(argv)
     except AppError as exc:
-        write_error(exc)
-        return exc.exit_code
-    except ConfigError as exc:
-        write_error(exc)
-        return exc.exit_code
-    except OSError:
-        write_error(AppError("config_invalid", "Cannot access a required local file. Check file paths and permissions. Run uvx imap-agent-cli config check."))
-        return 1
-    except KeyboardInterrupt:
-        write_error(AppError("interrupted", "interrupted by user", exit_code=130))
-        return 130
+        error, caught = exc, exc
+    except (BrokenPipeError, UnicodeEncodeError) as exc:
+        error, caught = AppError("output_failed", "Could not write the response to the output stream.", operation="output", phase="write"), exc
+    except OSError as exc:
+        error, caught = AppError("config_invalid", "Cannot access a required local file. Check file paths and permissions. Run uvx imap-agent-cli config check."), exc
+    except KeyboardInterrupt as exc:
+        error, caught = AppError("interrupted", "interrupted by user", exit_code=130), exc
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    except Exception as exc:
+        error, caught = AppError("internal_error", "The command failed unexpectedly. Use --debug for a redacted traceback."), exc
+    debug = None
+    if "--debug" in argv and caught is not None:
+        debug = {"exception_type": type(caught).__name__, "traceback": [
+            {"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+            for frame in traceback.extract_tb(caught.__traceback__)
+        ]}
+    try:
+        write_error(error, debug=debug)
+    except (AppError, OSError, ValueError):
+        # A closed stderr has no remaining channel for a structured error.
+        pass
+    return error.exit_code
 
 
 if __name__ == "__main__":

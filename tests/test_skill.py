@@ -56,6 +56,13 @@ class SkillTests(unittest.TestCase):
         self.assertIn("--non-interactive", SKILL_MD)
         self.assertIn("--profile NAME", SKILL_MD)
 
+    def test_skill_explains_encoding_limits_recovery_and_small_responses(self) -> None:
+        for text in ("installed `imap-agent-cli <command>`", "launcher or environment problem", "--no-skill-sync",
+                     "IMAP_AGENT_CLI_NO_SKILL_SYNC=1", "search --minimal", "--fields folder,uid,subject,from,date",
+                     "after the server search", "--timings", "BODYSTRUCTURE", "BODY.PEEK", "size_bytes: null",
+                     "does not limit network transfer", "lossless ASCII escapes", "outcome: unknown", "Draft appends never retry"):
+            self.assertIn(text, SKILL_MD)
+
     def test_installed_skill_requires_requested_search_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             install_skill(Path(tmp))

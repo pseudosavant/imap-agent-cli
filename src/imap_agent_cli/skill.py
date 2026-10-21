@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,6 +15,7 @@ from yaml.nodes import MappingNode, Node, ScalarNode
 from . import __version__
 from .errors import AppError
 from .runtime import DISTRIBUTION_NAME, is_local_development
+from .render import write_diagnostic
 
 
 SKILL_NAME = "imap"
@@ -56,6 +56,10 @@ Prefer the published CLI:
 ```text
 uvx imap-agent-cli <command>
 ```
+
+An installed `imap-agent-cli <command>` executable is also supported. Prefer it when uv cannot access its cache in a restricted environment. A uv cache Access Denied failure before startup is a launcher or environment problem. Do not change credential locations to bypass restrictions.
+
+For predictable ordinary commands without automatic skill-file writes, add `--no-skill-sync` or set `IMAP_AGENT_CLI_NO_SKILL_SYNC=1`. This also applies to help, version, and about. Explicit skill installation remains available.
 
 If working inside the `imap-agent-cli` repository, this local form is also valid:
 
@@ -114,6 +118,10 @@ uvx imap-agent-cli search --folder INBOX --since 2026-01-01 --before 2026-02-01 
 
 Search returns metadata summaries and does not fetch full message bodies. Use bounded `--max-results` and `--max-scan` values for broad searches.
 
+Prefer `search --minimal` for folder, UID, subject, sender (`from`), and date without the query object. Use `--fields folder,uid,subject,from,date` for explicit field selection. The default response remains unchanged. JSON input accepts `minimal` and `fields` too.
+
+`--max-scan` limits candidate metadata reads per folder after the server search. It does not bound server search work or the UID response. UID ordering stops after enough qualifying results. Attachment filtering may scan further. Date ordering inspects all bounded candidates and sorts across the requested folders. Counts describe inspected candidates, not total mailbox matches. `--timings` writes phase timings as JSON diagnostics to stderr when a search is slow.
+
 Other useful filters:
 
 ```text
@@ -151,6 +159,8 @@ uvx imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-
 ```
 
 Use `metadata` first when confirming identity or headers. Use `--include-attachments none` when attachments are irrelevant, and `--include-attachments metadata` when attachment names/types/sizes matter. Use `plain` when summarizing. Use `html` only when formatting or links matter.
+
+Metadata reads use headers and BODYSTRUCTURE only. Body reads use BODY.PEEK for the selected text MIME part without transferring attachment payloads. Exact decoded attachment sizes can be unknown and appear as `size_bytes: null`. `--max-body-chars` limits returned text after rendering. It does not limit network transfer of the selected text part.
 
 ## Thread Context
 
@@ -202,6 +212,8 @@ For longer draft bodies, write a temporary body file and pass `--body-file`. Tel
 ## Output Handling
 
 All CLI payloads are JSON on stdout. Diagnostics and errors are on stderr. Parse JSON before deciding what to show the user, and summarize high-signal fields instead of dumping raw output.
+
+JSON input is UTF-8. JSON output uses lossless ASCII escapes for Unicode and restores exact values after parsing. Check the exit status before consuming stdout. Discard partial stdout on failure. Errors identify code and retryability. Network errors identify operation, phase, and attempts. Safe reads retry once after reconnecting. Draft appends never retry automatically. An append timeout has `retryable: false` and `outcome: unknown`. Verify Drafts before creating another draft. Use `--debug` only when redacted traceback frame locations are needed. Never request raw protocol logs or exception payloads.
 """
 
 
@@ -431,13 +443,16 @@ def sync_skill() -> None:
         state = _inspect(previous)
         reason = _sync_skip_reason(state)
         if reason == "altered_or_unverifiable":
-            print(f"imap skill at '{path}' is altered or unverifiable. To replace it, run: {FORCE_INSTALL_COMMAND}", file=sys.stderr)
+            write_diagnostic({"warning": {"code": "skill_altered", "message": f"imap skill at '{path}' is altered or unverifiable. To replace it, run: {FORCE_INSTALL_COMMAND}"}})
         elif reason is None and _atomic_write(path, render_skill(), previous):
             old = state["installed_version"] or state["version_state"]
-            print(f"Updated imap skill from {old} to {__version__} at '{path}'.", file=sys.stderr)
+            write_diagnostic({"diagnostic": {"message": f"Updated imap skill from {old} to {__version__} at '{path}'."}})
     except Exception:
         # Do not expose installed content through parser or decoding exceptions.
-        print("Warning: imap skill synchronization failed. The command will continue.", file=sys.stderr)
+        try:
+            write_diagnostic({"warning": {"code": "skill_sync_failed", "message": "Warning: imap skill synchronization failed. The command will continue."}})
+        except AppError:
+            pass
 
 
 def install_skill(skills_dir: Path | None = None, *, force: bool = False) -> dict[str, Any]:

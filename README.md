@@ -92,6 +92,14 @@ imap-agent-cli --help
 
 The examples below continue to use `uvx imap-agent-cli` so they work without a global installation.
 
+In restricted environments, invoke the installed `imap-agent-cli` executable directly to avoid uv launcher and cache access during ordinary commands:
+
+```text
+imap-agent-cli --no-skill-sync search --folder INBOX --max-results 5 --minimal
+```
+
+An `Access Denied` error from uv's cache before the CLI starts is a launcher or environment problem. Check the launcher's allowed cache access or use an already installed executable. The CLI cannot return a structured error before it starts. Do not move credentials or change credential paths to bypass access restrictions.
+
 ## How safe access works
 
 The tool follows five core rules:
@@ -187,7 +195,15 @@ Search defaults to `INBOX` only, returns metadata only, and limits results to a 
 uvx imap-agent-cli search --subject "invoice" --max-results 10
 uvx imap-agent-cli search --from "person@example.com" --since 2026-01-01 --max-results 10
 uvx imap-agent-cli search --to "me@example.com" --has-attachments --max-results 10 --max-scan 100
+uvx imap-agent-cli search --folder INBOX --max-results 5 --minimal
+uvx imap-agent-cli search --folder INBOX --fields folder,uid,subject,from,date
 ```
+
+The default response format is unchanged. `--minimal` returns folder, UID, subject, sender addresses in `from`, and date for each result. It omits the query object. `--fields` selects comma-separated result fields and can be combined with `--minimal`. JSON requests accept `minimal` and `fields`, with fields supplied as a list or comma-separated string.
+
+`--max-scan` applies per folder to candidate UIDs returned by the server search. It does not limit the server's search work or the size of its UID response. UID ordering fetches metadata incrementally and stops when enough qualifying results are available. Attachment filtering may require more candidates. Date ordering fetches all candidates within that bound, then sorts by internal date across the requested folders. If the candidate limit is reached, date ordering is only complete within that candidate set. UID ordering preserves folder traversal order across folders because UIDs are local to each folder.
+
+`scanned_count` counts candidate metadata reads actually attempted. `matched_count` counts qualifying summaries observed before stopping. Neither is a total mailbox match count. `truncated` also indicates uninspected candidates or folders. Add `--timings` to report select, search, and metadata-fetch durations and attempt counts as JSON diagnostics on stderr. Stdout remains the response JSON.
 
 When requested, search a specific folder, include its children, or search all selectable folders:
 
@@ -219,6 +235,10 @@ uvx imap-agent-cli read --folder INBOX --uid 12345 --body-format html --include-
 | `raw-html` | Explicit access to untrusted, unsanitized source HTML |
 
 HTML sanitization removes active content and unsafe resource references. Markdown conversion is intentionally lossy. Attachment content is never included in a read result.
+
+Metadata reads fetch only headers and `BODYSTRUCTURE`. Body reads fetch the text MIME part needed for the selected format with `BODY.PEEK`, without downloading attachment payloads. Thread body reads use the same path. Reply drafts read only source metadata. The fetch behavior follows [IMAP section numbering and PEEK semantics](https://www.rfc-editor.org/rfc/rfc3501#section-6.4.5). Attachment names, types, inline status, and IDs remain available from the MIME structure. `size_bytes` is `null` when the exact decoded attachment size cannot be determined without downloading it, such as base64 or quoted-printable content. An explicit download reports exact decoded sizes.
+
+`--max-body-chars` limits returned text after decoding and rendering. It does not cap network transfer. A selected text part is transferred in full even when only a short excerpt is returned.
 
 ### Inspect thread context
 
@@ -286,6 +306,8 @@ uvx imap-agent-cli skill status --format plain
 
 Normal mailbox invocations and top-level help, version, and about commands of an installed CLI update a pristine older managed skill to the running CLI version. Synchronization is local. It does not query PyPI, refresh uv's cache, or update the CLI. Missing skills are never installed automatically. Unmanaged, modified, equal-version, and newer skills are preserved.
 
+Pass `--no-skill-sync` before or after the command, or set `IMAP_AGENT_CLI_NO_SKILL_SYNC=1`, to skip automatic skill checks and writes. This also applies to help, version, and about. Explicit `skill install` and setup's requested skill installation still work. Use `setup --no-skill` to skip setup's installation step. Automatic synchronization diagnostics use JSON lines on stderr.
+
 Restore altered managed content explicitly:
 
 ```text
@@ -314,6 +336,14 @@ Local checkouts, direct source installs, editable builds, and unidentifiable ins
 ## Structured output and automation
 
 Operational commands write JSON payloads to stdout. Diagnostics, warnings, progress, and errors go to stderr. This keeps command output safe to parse in agent and automation workflows.
+
+JSON files and piped JSON input use UTF-8. Standard streams are initialized as UTF-8 before synchronization or output. JSON responses use ASCII escapes for Unicode so fixed-encoding capture streams also work. Parsing the JSON restores exact Unicode values, including narrow no-break spaces, accented names, CJK text, and emoji. `PYTHONIOENCODING` and `PYTHONUTF8` overrides are unnecessary.
+
+Operational errors include `code`, `message`, and `retryable`. Network errors also identify the operation, phase, and attempts. Timeouts use `connection_timeout`. Other network failures use `connection_failed`. Missing messages, server failures, configuration failures, authentication failures, and output failures retain distinct codes. Unexpected exceptions use `internal_error` without a traceback by default. `--debug` adds traceback frame locations and the exception type inside the error JSON. It omits exception text, source lines, local values, and exception chains to avoid exposing secrets or message payloads.
+
+Safe mailbox reads retry a timeout or dropped connection once, after reconnecting and reselecting read-only. Server command rejections and authentication failures are not retried. Configuration verification uses its own deadline and does not reconnect automatically. A draft append is attempted once. A network failure during append returns `retryable=false` and `outcome=unknown` because the server may already have saved the draft. Inspect Drafts before deciding whether to create it again.
+
+Output failures use `output_failed` and a nonzero exit status. A write failure can leave partial stdout. Discard stdout whenever the exit status is nonzero. If stderr itself is unavailable, the process can return failure but cannot deliver an error payload.
 
 Search, read, and draft commands also accept structured input from a JSON file:
 

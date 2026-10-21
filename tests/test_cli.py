@@ -12,6 +12,7 @@ from tests import _bootstrap  # noqa: F401
 from imap_agent_cli import __version__
 from imap_agent_cli.cli import build_parser, main
 from imap_agent_cli.models import Config, Defaults, Profile
+from imap_agent_cli.mime import parse_message
 
 
 class FakeCheckSession:
@@ -64,7 +65,7 @@ class CliTests(unittest.TestCase):
             with self.subTest(args=args), patch("imap_agent_cli.cli.load_config", return_value=Config()), patch("imap_agent_cli.cli._session") as factory, patch("sys.stdout", StringIO()):
                 session = factory.return_value.__enter__.return_value
                 session.profile = Profile(name="default", host="imap.example.com", username="login123", sender="sender@example.com")
-                session._fetch_raw.return_value = b"From: recipient@example.com\r\nSubject: Example\r\nMessage-ID: <original@example.com>\r\n\r\nBody"
+                session._message_metadata.return_value = (parse_message(b"From: recipient@example.com\r\nSubject: Example\r\nMessage-ID: <original@example.com>\r\n\r\n"), [])
                 session.append_draft.return_value = {"created": True}
                 self.assertEqual(main([*args, "--body", "Draft text"]), 0)
                 self.assertEqual(session.append_draft.call_args.args[0]["From"], "sender@example.com")

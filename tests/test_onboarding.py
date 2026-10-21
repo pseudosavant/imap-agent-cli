@@ -326,6 +326,18 @@ class VerificationTests(unittest.TestCase):
         server.search.assert_not_called()
         self.assertEqual(report["checks"][-1]["required"], False)
 
+    def test_verification_timeout_preserves_network_phase_without_reconnecting(self):
+        profile, server, factory = self.fixture()
+        server.search.side_effect = TimeoutError(SECRET)
+        with patch("imapclient.IMAPClient") as connection:
+            report = verify_profile(profile, Defaults(), session_factory=factory)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["checks"][-1]["name"], "connection_timeout")
+        self.assertEqual(report["checks"][-1]["phase"], "search")
+        self.assertTrue(report["checks"][-1]["retryable"])
+        self.assertNotIn(SECRET, json.dumps(report))
+        connection.assert_not_called()
+
     def test_configured_nonexistent_drafts_is_not_claimed_verified(self):
         profile, server, factory = self.fixture()
         report = verify_profile(replace(profile, drafts_folder="Missing"), Defaults(), session_factory=factory)
@@ -372,7 +384,8 @@ class VerificationTests(unittest.TestCase):
                     with ImapSession(replace(profile, tls=False, ssl_mode=mode), Defaults()):
                         pass
             server.login.assert_not_called()
-            server.logout.assert_called_once()
+            server.shutdown.assert_called_once()
+            server.logout.assert_not_called()
 
     def test_login_connection_abort_is_not_reported_as_bad_password(self):
         profile, server, _ = self.fixture()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from .errors import AppError
-from .imap_client import ImapSession, METADATA_FETCH_FIELDS
+from .imap_client import ImapSession, METADATA_FETCH_FIELDS, _network_error
 from .models import Defaults, Profile
 
 
@@ -29,18 +29,25 @@ def verify_profile(profile: Profile, defaults: Defaults, *, local: bool = False,
         return report
     try:
         with session_factory(profile, defaults) as session:
+            # Keep verification within its own deadline without reconnect retries.
+            session.read_attempts = 1
             deadline = time.monotonic() + 60
-            def bounded(operation):
+            def bounded(operation, phase):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise AppError("connection_timeout", "Verification exceeded 60 seconds. Check the server and network, then retry config check.")
+                    raise AppError("connection_timeout", "Verification exceeded 60 seconds. Check the server and network, then retry config check.", retryable=True, operation="verify", phase=phase)
                 session.server.socket().settimeout(min(profile.read_timeout_seconds, remaining))
-                return operation()
+                try:
+                    return operation()
+                except AppError:
+                    raise
+                except Exception as exc:
+                    raise _network_error(exc, "verify", phase) from None
 
             checks.append({"name": "login", "ok": True, "security": session.security})
-            checks.append({"name": "capabilities", "ok": True, "values": bounded(session.capabilities)})
+            checks.append({"name": "capabilities", "ok": True, "values": bounded(session.capabilities, "capabilities")})
             # One LIST, no per-folder STATUS requests. Bound retained results.
-            folders = bounded(session.server.list_folders)
+            folders = bounded(session.server.list_folders, "list_folders")
             if len(folders) > 1000:
                 raise AppError("verification_limit", "The server returned more than 1000 folders. Verification stopped without changing the mailbox.")
             checks.append({"name": "folders", "ok": True, "count": len(folders)})
@@ -52,18 +59,18 @@ def verify_profile(profile: Profile, defaults: Defaults, *, local: bool = False,
                     selectable[str(name)] = normalized
                     if "\\drafts" in normalized:
                         special_drafts.append(str(name))
-            selected = bounded(lambda: session._select(defaults.default_folder, readonly=True))
+            selected = bounded(lambda: session._select(defaults.default_folder, readonly=True), "select")
             checks.append({"name": "default_folder", "ok": True, "folder": defaults.default_folder, "mode": "read_only"})
             # UIDNEXT bounds the number of possible returned UIDs, even if the
             # server has millions of messages. No open-ended '*' search.
             uidnext = int(selected.get(b"UIDNEXT", selected.get("UIDNEXT", 0)))
             if uidnext > 1:
                 start = max(1, uidnext - min(defaults.max_scan, 250))
-                uids = bounded(lambda: session.server.search(["UID", f"{start}:{uidnext - 1}"]))
+                uids = bounded(lambda: session.server.search(["UID", f"{start}:{uidnext - 1}"]), "search")
                 if len(uids) > 250 or any(not start <= int(uid) < uidnext for uid in uids):
                     raise AppError("server_error", "The server returned UIDs outside the verification limit.")
                 if uids:
-                    data = bounded(lambda: session.server.fetch([max(uids)], METADATA_FETCH_FIELDS))
+                    data = bounded(lambda: session.server.fetch([max(uids)], METADATA_FETCH_FIELDS), "metadata_fetch")
                     if not data:
                         raise AppError("server_error", "Message metadata was unavailable. A message may have changed during verification. Retry config check.")
                     checks.append({"name": "message_metadata", "ok": True, "status": "verified"})
@@ -85,7 +92,7 @@ def verify_profile(profile: Profile, defaults: Defaults, *, local: bool = False,
             checks.append(item)
             report["verification"] = "verified"
     except AppError as exc:
-        checks.append({"name": exc.code, "ok": False, "error": exc.message})
+        checks.append({"name": exc.code, "ok": False, "error": exc.message, "retryable": exc.retryable, **exc.details})
         report["verification"] = "failed"
     except Exception:
         checks.append({"name": "server_error", "ok": False, "error": "IMAP verification failed. Check server access and retry uvx imap-agent-cli config check."})
